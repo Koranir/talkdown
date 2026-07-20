@@ -1,4 +1,5 @@
 mod app;
+mod checker;
 mod codex;
 mod document;
 mod edit;

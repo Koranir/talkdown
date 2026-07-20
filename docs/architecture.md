@@ -122,15 +122,18 @@ contextual instead of opening a banner.
 
 `settings: Option<SettingsDraft>` owns the modal transaction. Opening Settings
 copies the committed editor-text scale, UI scale, word wrap, and speech-model
-path into the draft. The opaque stack layer blocks pointer input, while an
+path into the draft together with the dictation-checking provider and optional
+Codex model. The opaque stack layer blocks pointer input, while an
 update guard rejects underlying editor commands; the Normal-mode caret refresh
 pauses as well. Apply commits the values together, runs UI scale/minimum-window
-tasks, and replaces the speech worker only when the model changed. Cancel or
-Escape drops the draft. Ctrl/Cmd+comma and the toolbar button open it when no
-recording, typed command, or file operation is active. Inside, plain `+`/`-`
+tasks, replaces the speech worker only when its model changed, and replaces the
+Codex worker only when its selected model changed. Cancel or Escape drops the
+draft. Ctrl/Cmd+comma and the toolbar button open it when no recording, typed
+command, file operation, or Codex edit is active. Inside, plain `+`/`-`
 stages editor text, Ctrl/Cmd `+`/`-` stages UI scale, `W` toggles wrap, and Enter
-applies. Only the model path is persisted currently; presentation preferences
-remain session-local.
+applies. The speech-model path, checking provider, Codex-model selection,
+editor-text scale, interface scale, and word wrap are persisted atomically. The
+preference body scrolls while its header and Apply/Cancel actions stay fixed.
 
 Presentation is deliberately typed. `UiState` distinguishes `Info`, `Ready`,
 `Listening`, `Working`, `Success`, `Warning`, `Error`, and `Offline`.
@@ -217,12 +220,29 @@ unchanged.
 ## Two voice intents
 
 - Hold `Space`: literal insertion. Talkdown inserts the local final transcript
-  immediately at the captured cursor/selection. It then selects that exact new
-  span only in a snapshot sent to Codex. Codex may polish recognition,
-  punctuation, capitalization, and contextual spacing, but the local validator
-  rejects any attempt to leave the span.
+  immediately at the captured cursor/selection. By default, a reusable
+  `harper-core` pipeline checks the spoken text locally and automatically
+  applies only non-overlapping, single-suggestion grammar, capitalization,
+  punctuation, repetition, boundary, and typo fixes. Spelling guesses, style
+  rewrites, and ambiguous alternatives are deliberately skipped. Each pass
+  retains the complete applied/ignored decision audit in memory, including
+  category, character span, Harper message, suggestions, and the reason for
+  every skip, including a document-validation failure after correction. The
+  Checker pill exposes the latest bounded summary; the audit is
+  never persisted because messages may contain dictated text. The corrected
+  span amends the optimistic history entry, so one utterance remains one Undo.
+  Settings can instead select Codex refinement; that path selects the exact new
+  span only in the snapshot sent to Codex, and the local validator rejects any
+  attempt to leave it.
 - Hold `c`: contextual command. No optimistic mutation occurs. Codex chooses an
   exact nearby target, and Talkdown validates it before replacement.
+
+The Codex worker queries paginated `model/list` after authentication and shows
+only picker-visible models advertised by the installed CLI. Settings can inherit
+the CLI default or persist one advertised model string. Applying a changed model
+starts a fresh ephemeral thread with that model; an unavailable saved selection
+is shown explicitly and blocks Apply until the user chooses an available model
+or the CLI default.
 
 The typed `:` prompt exercises the second path without needing audio.
 
@@ -251,12 +271,14 @@ Talkdown tests progressively replace only the slow or machine-dependent edge:
   transcribes the audio and the app creates a genuine `CodexRequest`. An
   intercepted driver then supplies a deterministic manual completion, so the
   test never consumes a Codex turn.
-- Six ignored visual regressions construct complete `App::view()` fixtures in
+- Seven ignored visual regressions construct complete `App::view()` fixtures in
   `iced_test::Simulator` and render them with tiny-skia into offscreen buffers.
   The ready/success fixture compares
   `tests/snapshots/main-window-tiny-skia.png`; the contextual-help fixture hovers
   the Normal-mode pill and compares
-  `tests/snapshots/contextual-help-window-tiny-skia.png`; the settings fixture
+  `tests/snapshots/contextual-help-window-tiny-skia.png`; the checker-audit
+  fixture hovers a completed Checker pill and compares
+  `tests/snapshots/checker-audit-window-tiny-skia.png`; the settings fixture
   compares `tests/snapshots/settings-window-tiny-skia.png`; the model-download
   failure fixture compares `tests/snapshots/model-download-window-tiny-skia.png`;
   the Codex-failure
@@ -270,7 +292,7 @@ Talkdown tests progressively replace only the slow or machine-dependent edge:
   The main, contextual-help, and failure fixtures use 100%; all fixtures use the
   host-resolved Atkinson Hyperlegible Next and Libertinus Sans families plus the
   generic monospace choice, so they are host-specific. None takes a whole-desktop
-  screenshot. The shared test filter is `window_snapshot` and runs all six.
+  screenshot. The shared test filter is `window_snapshot` and runs all seven.
 
 An ignored PipeWire test exercises the remaining CPAL device-selection seam
 through the optional helper. The helper creates a temporary source and launches

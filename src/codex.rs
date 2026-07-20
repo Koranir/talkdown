@@ -40,11 +40,21 @@ pub struct CodexRequest {
     pub file_name: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexModel {
+    pub model: String,
+    pub display_name: String,
+    pub description: String,
+    pub is_default: bool,
+}
+
 #[derive(Debug)]
 pub enum CodexEvent {
     Starting,
+    Models(Vec<CodexModel>),
     Ready {
         plan: String,
+        model: String,
     },
     Working {
         request_id: u64,
@@ -79,13 +89,13 @@ pub struct CodexBridge {
 }
 
 impl CodexBridge {
-    pub fn start() -> Self {
+    pub fn start_with_model(model: Option<String>) -> Self {
         let (command_tx, command_rx) = bounded(MAX_QUEUED_EDITS);
         let (event_tx, event_rx) = unbounded();
 
         let _ = thread::Builder::new()
             .name("talkdown-codex".into())
-            .spawn(move || worker(command_rx, event_tx));
+            .spawn(move || worker(command_rx, event_tx, model));
 
         Self {
             commands: command_tx,
@@ -170,9 +180,9 @@ impl Drop for CodexBridge {
     }
 }
 
-fn worker(commands: Receiver<WorkerCommand>, events: Sender<CodexEvent>) {
+fn worker(commands: Receiver<WorkerCommand>, events: Sender<CodexEvent>, model: Option<String>) {
     let _ = events.send(CodexEvent::Starting);
-    let mut session = connect(&events).ok();
+    let mut session = connect(&events, model.as_deref()).ok();
 
     while let Ok(command) = commands.recv() {
         match command {
@@ -180,7 +190,7 @@ fn worker(commands: Receiver<WorkerCommand>, events: Sender<CodexEvent>) {
             WorkerCommand::Submit(request) => {
                 if session.is_none() {
                     let _ = events.send(CodexEvent::Starting);
-                    session = connect(&events).ok();
+                    session = connect(&events, model.as_deref()).ok();
                 }
 
                 let Some(active) = session.as_mut() else {
@@ -216,11 +226,12 @@ fn worker(commands: Receiver<WorkerCommand>, events: Sender<CodexEvent>) {
     let _ = events.send(CodexEvent::Stopped);
 }
 
-fn connect(events: &Sender<CodexEvent>) -> Result<Session> {
-    match Session::connect() {
+fn connect(events: &Sender<CodexEvent>, model: Option<&str>) -> Result<Session> {
+    match Session::connect(model, Some(events)) {
         Ok(session) => {
             let _ = events.send(CodexEvent::Ready {
                 plan: session.plan.clone(),
+                model: session.model.clone(),
             });
             Ok(session)
         }
@@ -241,11 +252,12 @@ struct Session {
     thread_id: String,
     next_id: u64,
     plan: String,
+    model: String,
     private_cwd: tempfile::TempDir,
 }
 
 impl Session {
-    fn connect() -> Result<Self> {
+    fn connect(selected_model: Option<&str>, events: Option<&Sender<CodexEvent>>) -> Result<Self> {
         let private_cwd = private_codex_cwd()?;
         let codex = std::env::var_os("TALKDOWN_CODEX_BIN").unwrap_or_else(|| "codex".into());
         let mut child = Command::new(codex)
@@ -305,6 +317,7 @@ impl Session {
             thread_id: String::new(),
             next_id: 10,
             plan: String::new(),
+            model: String::new(),
             private_cwd,
         };
 
@@ -344,17 +357,21 @@ impl Session {
             .unwrap_or("ChatGPT")
             .to_owned();
 
-        let thread = session.call(
-            "thread/start",
-            json!({
-                "cwd": session.private_cwd.path().to_string_lossy(),
-                "ephemeral": true,
-                "approvalPolicy": "never",
-                "sandbox": "read-only",
-                "developerInstructions": DEVELOPER_INSTRUCTIONS,
-                "serviceName": "talkdown"
-            }),
-        )?;
+        let models = session.list_models()?;
+        if let Some(events) = events {
+            let _ = events.send(CodexEvent::Models(models.clone()));
+        }
+
+        if let Some(selected) = selected_model
+            && !models.iter().any(|model| model.model == selected)
+        {
+            bail!(
+                "the selected Codex model `{selected}` is not advertised by this Codex installation; open Settings and choose an available model"
+            );
+        }
+
+        let thread_params = thread_start_params(session.private_cwd.path(), selected_model);
+        let thread = session.call("thread/start", thread_params)?;
         let model_provider = thread
             .get("modelProvider")
             .and_then(Value::as_str)
@@ -369,8 +386,71 @@ impl Session {
             .and_then(Value::as_str)
             .context("Codex app-server did not return a thread id")?
             .to_owned();
+        session.model = thread
+            .get("model")
+            .and_then(Value::as_str)
+            .context("Codex app-server did not report its active model")?
+            .to_owned();
 
         Ok(session)
+    }
+
+    fn list_models(&mut self) -> Result<Vec<CodexModel>> {
+        let mut models = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let response = self.call(
+                "model/list",
+                json!({ "cursor": cursor, "includeHidden": false }),
+            )?;
+            let data = response
+                .get("data")
+                .and_then(Value::as_array)
+                .context("Codex model list has no data array")?;
+            for entry in data {
+                let model = entry
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .context("Codex model entry has no model id")?;
+                let display_name = entry
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .unwrap_or(model);
+                if !models.iter().any(|known: &CodexModel| known.model == model) {
+                    models.push(CodexModel {
+                        model: model.to_owned(),
+                        display_name: display_name.to_owned(),
+                        description: entry
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        is_default: entry
+                            .get("isDefault")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    });
+                }
+            }
+
+            let next_cursor = response
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if next_cursor.is_some() && next_cursor == cursor {
+                bail!("Codex model list repeated its pagination cursor");
+            }
+            cursor = next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        if models.is_empty() {
+            bail!("Codex did not advertise any subscription models");
+        }
+        Ok(models)
     }
 
     fn edit(&mut self, request: CodexRequest, events: &Sender<CodexEvent>) -> Result<ProposedEdit> {
@@ -520,6 +600,21 @@ impl Session {
         self.next_id = self.next_id.wrapping_add(1);
         id
     }
+}
+
+fn thread_start_params(cwd: &std::path::Path, selected_model: Option<&str>) -> Value {
+    let mut params = json!({
+        "cwd": cwd.to_string_lossy(),
+        "ephemeral": true,
+        "approvalPolicy": "never",
+        "sandbox": "read-only",
+        "developerInstructions": DEVELOPER_INSTRUCTIONS,
+        "serviceName": "talkdown"
+    });
+    if let Some(selected) = selected_model {
+        params["model"] = Value::String(selected.to_owned());
+    }
+    params
 }
 
 impl Drop for Session {
@@ -716,18 +811,42 @@ mod tests {
     }
 
     #[test]
+    fn selected_model_is_scoped_to_thread_start() {
+        let inherited = thread_start_params(std::path::Path::new("/isolated"), None);
+        let selected =
+            thread_start_params(std::path::Path::new("/isolated"), Some("gpt-test-codex"));
+
+        assert!(inherited.get("model").is_none());
+        assert_eq!(
+            selected.get("model").and_then(Value::as_str),
+            Some("gpt-test-codex")
+        );
+        assert_eq!(
+            selected.get("sandbox").and_then(Value::as_str),
+            Some("read-only")
+        );
+        assert_eq!(
+            selected.get("approvalPolicy").and_then(Value::as_str),
+            Some("never")
+        );
+    }
+
+    #[test]
     #[ignore = "requires an installed, ChatGPT-authenticated Codex CLI"]
     fn connects_through_chatgpt_subscription() {
-        let session = Session::connect().expect("subscription-backed app-server connection");
+        let session =
+            Session::connect(None, None).expect("subscription-backed app-server connection");
 
         assert!(!session.thread_id.is_empty());
         assert!(!session.plan.is_empty());
+        assert!(!session.model.is_empty());
     }
 
     #[test]
     #[ignore = "uses one live Codex subscription turn"]
     fn returns_a_schema_valid_fixed_span_edit() {
-        let mut session = Session::connect().expect("subscription-backed app-server connection");
+        let mut session =
+            Session::connect(None, None).expect("subscription-backed app-server connection");
         let (events, _ignored) = unbounded();
         let proposal = session
             .edit(

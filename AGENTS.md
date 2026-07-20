@@ -37,6 +37,14 @@ Optimize in this order:
 - Rust edition is 2024; the package MSRV follows iced at 1.92.
 - Codex integration was tested against `codex-cli 0.144.5` using both a live
   ChatGPT-auth handshake and one schema-constrained edit turn.
+- Literal dictation defaults to a conservative local `harper-core` 2.5 checker.
+  Settings can switch that path back to Codex; contextual commands always
+  remain Codex-backed. The Codex selector uses the installed app-server's
+  paginated `model/list` response instead of hardcoded model names. Every
+  Harper pass retains an in-memory audit of applied and ignored findings;
+  ignored records distinguish policy exclusions, missing or ambiguous
+  suggestions, overlaps, and rejected document application. The Checker pill
+  exposes the latest summary.
 - Local speech uses `cpal 0.17.x` and `whisper-rs 0.16.x`.
 - The ignored native speech test loaded `ggml-tiny.en.bin` and opened this
   host's default microphone successfully.
@@ -51,11 +59,12 @@ Optimize in this order:
   utterance as one undo step without starting either external worker.
 - An ignored eSpeak test writes a seekable WAV, injects PCM below CPAL, runs
   real local Whisper, inspects the app's genuine request, and manually
-  completes an intercepted Codex response. Six ignored tiny-skia tests render
+  completes an intercepted Codex response. Seven ignored tiny-skia tests render
   complete ready/success, hovered Normal-mode help, settings-modal,
   model-download failure, Codex-failure, and minimum-window/offline-Speech-help views offscreen
   against `tests/snapshots/main-window-tiny-skia.png`,
   `tests/snapshots/contextual-help-window-tiny-skia.png`,
+  `tests/snapshots/checker-audit-window-tiny-skia.png`,
   `tests/snapshots/settings-window-tiny-skia.png`,
   `tests/snapshots/model-download-window-tiny-skia.png`,
   `tests/snapshots/failure-window-tiny-skia.png`, and
@@ -67,8 +76,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 59 tests: 48 normal and eleven
-  ignored. The no-default-feature build discovers 52: 44 normal and eight
+- The default-feature build currently discovers 72 tests: 60 normal and twelve
+  ignored. The no-default-feature build discovers 65: 56 normal and nine
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo test` passes with the default feature and with
   `--no-default-features`.
@@ -81,13 +90,17 @@ Optimize in this order:
   scale, contextual tooltips, atomic steady-caret operation, typed notices,
   modal key bindings, file lifecycle, speech/Codex orchestration, optimistic
   insertion, and stale-result policy.
+- `src/checker.rs`: persisted checking-provider choice and the conservative,
+  reusable Harper auto-fix pipeline plus its applied/ignored decision records.
 - `src/document.rs`: iced content wrapper, UTF-8 cursor/selection snapshots,
   history, trusted replacement, one-step refinement amendment.
 - `src/edit.rs`: tiny Codex edit language and exact-target resolution.
-- `src/model.rs`: platform paths, persisted speech-model selection, pinned
-  default-model metadata, verified atomic download, progress, and cancellation.
-- `src/codex.rs`: persistent JSONL app-server child, auth guard, prompt/context
-  construction, output schema, streamed events.
+- `src/model.rs`: platform paths, atomically persisted speech/checker/Codex
+  preferences, pinned default-model metadata, verified download, progress, and
+  cancellation.
+- `src/codex.rs`: persistent JSONL app-server child, auth guard, paginated model
+  discovery, selected-model thread start, prompt/context construction, output
+  schema, and streamed events.
 - `src/speech.rs`: microphone callback, bounded audio channel, resampling,
   utterance-tagged capture, separate latest-wins rolling Whisper decoder,
   partial/final events.
@@ -208,13 +221,17 @@ Optimize in this order:
   minimum when UI zoom increases. Percentages are deliberately absent from the
   footer; its shortcut cell reads `I insert · : cmd · +/- text`,
   and routine zoom feedback is contextual instead of opening a banner.
-- The Settings modal stages editor-text zoom, interface scale, word wrap, and
-  speech-model path in `SettingsDraft`. Apply commits them together; Cancel or
-  Escape discards the staged selection. Its opaque layer
+- The Settings modal stages editor-text zoom, interface scale, word wrap,
+  speech-model path, checking provider, and Codex model in `SettingsDraft`.
+  Apply commits them together; Cancel or Escape discards the staged selection.
+  Its opaque layer
   and update guard must keep every underlying editor or modal command inert
   while it is open. Do not apply scale-factor/window resizing until Apply, and
-  keep Ctrl/Cmd+comma plus the toolbar button as entry points. Only the model
-  path is persisted currently; presentation settings remain session-only.
+  keep Ctrl/Cmd+comma plus the toolbar button as entry points. Do not open it
+  while a Codex edit is pending, because applying a model change replaces the
+  worker. Speech path, checker provider, Codex model, editor-text scale,
+  interface scale, and word wrap are persisted together. Tests must intercept
+  preference writes and never modify the user's real configuration file.
 
 ### Semantic edits
 
@@ -223,9 +240,14 @@ Optimize in this order:
 - Empty targets are valid only for insertion at an unchanged cursor.
 - On a stale response, apply only a non-empty target that still resolves
   unambiguously. Otherwise preserve text and surface a typed safety notice.
-- Literal dictation is inserted optimistically. Its Codex refinement may amend
-  the immediately preceding history entry only when no intervening revision
-  occurred. One utterance should remain one undo step.
+- Literal dictation is inserted optimistically. Harper is the default checker
+  and may auto-apply only a non-overlapping, single-suggestion conservative
+  grammar fix set; do not add spelling guesses or broad style rewrites without
+  an explicit review UI. Retain its latest complete lint audit in memory only;
+  lint messages can contain dictated text, so do not persist or externally log
+  them. If Settings selects Codex instead, its refinement may
+  amend the immediately preceding history entry only when no intervening
+  revision occurred. Either path keeps one utterance as one undo step.
 - Document content and transcript strings are untrusted prompt data. Keep the
   developer instruction, isolated working directory, read-only sandbox,
   `approvalPolicy: never`, strict output schema, and local validator.
@@ -252,6 +274,9 @@ Optimize in this order:
   experimental and unnecessary for the local desktop app.
 - Require both ChatGPT account auth and the `openai` thread model provider.
   Correlate notifications by thread and turn ID, and keep a total turn deadline.
+- Discover picker-visible Codex models with paginated `model/list`; never
+  hardcode the subscription catalog. Pass a selected model to `thread/start`
+  only after it is advertised, and keep the CLI-default option available.
 - With the current Whisper/app-server pipeline, send finalized speech only, not
   every ASR partial, to conserve latency and subscription limits.
 - At Codex commit `2deed3f`, Realtime still requires API-key auth, but its source
@@ -295,18 +320,19 @@ Optimize in this order:
 - Full-window visual regression uses `iced_test::Simulator` with
   `ICED_TEST_BACKEND=tiny-skia`. It snapshots only Talkdown's offscreen renderer
   buffer, never the whole desktop. The ready/success, hovered Normal-mode help,
-  staged settings modal, model-download failure, preserved-transcript failure, and 940 × 640
-  offline-Speech-help geometry
+  checker-audit tooltip, staged settings modal, model-download failure,
+  preserved-transcript failure, and 940 × 640 offline-Speech-help geometry
   baselines are
   `tests/snapshots/main-window-tiny-skia.png`,
   `tests/snapshots/contextual-help-window-tiny-skia.png`,
+  `tests/snapshots/checker-audit-window-tiny-skia.png`,
   `tests/snapshots/settings-window-tiny-skia.png`,
   `tests/snapshots/model-download-window-tiny-skia.png`,
   `tests/snapshots/failure-window-tiny-skia.png`, and
   `tests/snapshots/minimum-window-tiny-skia.png`. The minimum fixture also
   checks visibility and alignment in the widget tree at the maximum 140% scale
   state while hovering the offline Speech pill over its visible error notice.
-  The shared command filters on `window_snapshot` so all six run together. The
+  The shared command filters on `window_snapshot` so all seven run together. The
   main, contextual-help, and failure fixtures use 100%; all fixtures use the
   system-resolved Atkinson Hyperlegible Next and Libertinus Sans families plus
   the generic monospace choice, so their bytes are host-dependent.
@@ -349,7 +375,7 @@ cargo clippy --all-targets -- -D warnings
 cargo check --no-default-features
 ```
 
-Eleven tests are ignored in the default-feature build. Run the handshake freely
+Twelve tests are ignored in the default-feature build. Run the handshake freely
 when relevant; the live edit test consumes one Codex turn and should be run
 only when protocol behavior changed. Use the exact injected-audio, snapshot,
 and fake-input commands in `docs/development.md`; keep

@@ -1,3 +1,5 @@
+use crate::checker::CheckingProvider;
+
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,12 @@ pub const DEFAULT_MODEL_BYTES: u64 = 147_964_211;
 pub const DEFAULT_MODEL_SHA256: &str =
     "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
 pub const DEFAULT_MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin";
+pub const DEFAULT_TEXT_SCALE_PERCENT: u16 = 100;
+pub const MIN_TEXT_SCALE_PERCENT: u16 = 80;
+pub const MAX_TEXT_SCALE_PERCENT: u16 = 200;
+pub const DEFAULT_UI_SCALE_PERCENT: u16 = 100;
+pub const MIN_UI_SCALE_PERCENT: u16 = 80;
+pub const MAX_UI_SCALE_PERCENT: u16 = 140;
 
 const SETTINGS_FILE: &str = "settings.json";
 const PROGRESS_GRANULARITY: u64 = 1024 * 1024;
@@ -99,9 +107,28 @@ impl ModelDownloadTestDriver {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct StoredSettings {
-    speech_model_path: Option<PathBuf>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppPreferences {
+    pub speech_model_path: Option<PathBuf>,
+    pub checking_provider: CheckingProvider,
+    pub codex_model: Option<String>,
+    pub text_scale_percent: u16,
+    pub ui_scale_percent: u16,
+    pub word_wrap: bool,
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            speech_model_path: None,
+            checking_provider: CheckingProvider::default(),
+            codex_model: None,
+            text_scale_percent: DEFAULT_TEXT_SCALE_PERCENT,
+            ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
+            word_wrap: true,
+        }
+    }
 }
 
 pub fn initial_model() -> InitialModel {
@@ -113,7 +140,7 @@ pub fn initial_model() -> InitialModel {
         };
     }
 
-    match load_saved_model_path() {
+    match load_preferences().map(|settings| settings.speech_model_path) {
         Ok(Some(path)) => InitialModel {
             path: Some(path),
             source: ModelSource::Saved,
@@ -145,23 +172,21 @@ pub fn default_model_path() -> Result<PathBuf, String> {
         .join(DEFAULT_MODEL_NAME))
 }
 
-pub fn save_model_path(path: &Path) -> Result<(), String> {
+#[cfg(not(test))]
+pub fn save_preferences(settings: &AppPreferences) -> Result<(), String> {
     let settings_path = settings_path()?;
-    save_model_path_at(&settings_path, path)
+    save_preferences_at(&settings_path, settings)
 }
 
-fn save_model_path_at(settings_path: &Path, path: &Path) -> Result<(), String> {
+fn save_preferences_at(settings_path: &Path, settings: &AppPreferences) -> Result<(), String> {
     let parent = settings_path
         .parent()
         .ok_or_else(|| "the Talkdown settings path has no parent directory".to_owned())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("could not create the settings directory: {error}"))?;
 
-    let settings = StoredSettings {
-        speech_model_path: Some(path.to_path_buf()),
-    };
     let bytes = serde_json::to_vec_pretty(&settings)
-        .map_err(|error| format!("could not encode model settings: {error}"))?;
+        .map_err(|error| format!("could not encode settings: {error}"))?;
     let temporary = append_suffix(settings_path, ".part");
     write_atomic(&temporary, settings_path, &bytes)
         .map_err(|error| format!("could not save model settings: {error}"))
@@ -194,19 +219,36 @@ fn settings_path() -> Result<PathBuf, String> {
     Ok(project_directories()?.config_dir().join(SETTINGS_FILE))
 }
 
-fn load_saved_model_path() -> Result<Option<PathBuf>, String> {
+pub fn load_preferences() -> Result<AppPreferences, String> {
     let path = settings_path()?;
-    load_saved_model_path_at(&path)
+    load_preferences_at(&path)
 }
 
-fn load_saved_model_path_at(path: &Path) -> Result<Option<PathBuf>, String> {
+fn load_preferences_at(path: &Path) -> Result<AppPreferences, String> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(AppPreferences::default());
+        }
         Err(error) => return Err(format!("could not read {}: {error}", path.display())),
     };
-    serde_json::from_slice::<StoredSettings>(&bytes)
-        .map(|settings| settings.speech_model_path)
+    serde_json::from_slice::<AppPreferences>(&bytes)
+        .map(|mut settings| {
+            if settings
+                .codex_model
+                .as_ref()
+                .is_some_and(|model| model.trim().is_empty())
+            {
+                settings.codex_model = None;
+            }
+            settings.text_scale_percent = settings
+                .text_scale_percent
+                .clamp(MIN_TEXT_SCALE_PERCENT, MAX_TEXT_SCALE_PERCENT);
+            settings.ui_scale_percent = settings
+                .ui_scale_percent
+                .clamp(MIN_UI_SCALE_PERCENT, MAX_UI_SCALE_PERCENT);
+            settings
+        })
         .map_err(|error| format!("could not parse {}: {error}", path.display()))
 }
 
@@ -489,11 +531,50 @@ mod tests {
         let settings = directory.path().join("nested/settings.json");
         let model = PathBuf::from("/models/custom.ggml.bin");
 
-        save_model_path_at(&settings, &model).expect("save model setting");
-        assert_eq!(
-            load_saved_model_path_at(&settings).expect("load model setting"),
-            Some(model)
-        );
+        let preferences = AppPreferences {
+            speech_model_path: Some(model.clone()),
+            checking_provider: CheckingProvider::Codex,
+            codex_model: Some("gpt-test-codex".into()),
+            text_scale_percent: 130,
+            ui_scale_percent: 110,
+            word_wrap: false,
+        };
+        save_preferences_at(&settings, &preferences).expect("save settings");
+        assert_eq!(load_preferences_at(&settings).unwrap(), preferences);
         assert!(!append_suffix(&settings, ".part").exists());
+    }
+
+    #[test]
+    fn old_model_only_settings_receive_safe_defaults() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings = directory.path().join("settings.json");
+        fs::write(&settings, r#"{"speech_model_path":"/models/old.bin"}"#).unwrap();
+
+        let loaded = load_preferences_at(&settings).unwrap();
+        assert_eq!(
+            loaded.speech_model_path,
+            Some(PathBuf::from("/models/old.bin"))
+        );
+        assert_eq!(loaded.checking_provider, CheckingProvider::Harper);
+        assert_eq!(loaded.codex_model, None);
+        assert_eq!(loaded.text_scale_percent, DEFAULT_TEXT_SCALE_PERCENT);
+        assert_eq!(loaded.ui_scale_percent, DEFAULT_UI_SCALE_PERCENT);
+        assert!(loaded.word_wrap);
+    }
+
+    #[test]
+    fn loaded_presentation_scales_are_clamped_to_supported_ranges() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let settings = directory.path().join("settings.json");
+        fs::write(
+            &settings,
+            r#"{"text_scale_percent":999,"ui_scale_percent":1,"word_wrap":false}"#,
+        )
+        .unwrap();
+
+        let loaded = load_preferences_at(&settings).unwrap();
+        assert_eq!(loaded.text_scale_percent, MAX_TEXT_SCALE_PERCENT);
+        assert_eq!(loaded.ui_scale_percent, MIN_UI_SCALE_PERCENT);
+        assert!(!loaded.word_wrap);
     }
 }

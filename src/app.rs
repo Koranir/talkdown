@@ -1,4 +1,5 @@
-use crate::codex::{CodexBridge, CodexEvent, CodexRequest, editable_context_range};
+use crate::checker::{CheckingProvider, HarperChecker, IgnoreReason, LintAudit, LintRecord};
+use crate::codex::{CodexBridge, CodexEvent, CodexModel, CodexRequest, editable_context_range};
 use crate::document::{Document, DocumentSnapshot};
 use crate::edit::{Anchor, EditIntent, ProposedEdit, rebase_exact, resolve};
 use crate::model::{self, DefaultModelDownload, DownloadError, DownloadEvent, ModelSource};
@@ -8,8 +9,8 @@ use iced::event::{self, Event};
 use iced::highlighter;
 use iced::keyboard::{self, key};
 use iced::widget::{
-    button, column, container, opaque, operation, progress_bar, row, space, stack, text,
-    text_editor, text_input, tooltip,
+    button, column, container, opaque, operation, pick_list, progress_bar, row, scrollable, space,
+    stack, text, text_editor, text_input, tooltip,
 };
 use iced::window;
 use iced::{
@@ -29,26 +30,30 @@ const COMMAND_ID: &str = "talkdown-command";
 const MODE_PILL_ID: &str = "talkdown-mode-pill";
 const SPEECH_PILL_ID: &str = "talkdown-speech-pill";
 const CODEX_PILL_ID: &str = "talkdown-codex-pill";
+const CHECKER_PILL_ID: &str = "talkdown-checker-pill";
 const SETTINGS_BUTTON_ID: &str = "talkdown-settings-button";
 const SETTINGS_MODAL_ID: &str = "talkdown-settings-modal";
+const SETTINGS_SCROLL_ID: &str = "talkdown-settings-scroll";
 const SETTINGS_TEXT_SCALE_DOWN_ID: &str = "talkdown-settings-text-scale-down";
 const SETTINGS_TEXT_SCALE_UP_ID: &str = "talkdown-settings-text-scale-up";
 const SETTINGS_UI_SCALE_DOWN_ID: &str = "talkdown-settings-ui-scale-down";
 const SETTINGS_UI_SCALE_UP_ID: &str = "talkdown-settings-ui-scale-up";
 const SETTINGS_WRAP_ID: &str = "talkdown-settings-wrap";
+const SETTINGS_CHECKER_ID: &str = "talkdown-settings-checker";
+const SETTINGS_CODEX_MODEL_ID: &str = "talkdown-settings-codex-model";
 const SETTINGS_MODEL_CHOOSE_ID: &str = "talkdown-settings-model-choose";
 const SETTINGS_MODEL_DEFAULT_ID: &str = "talkdown-settings-model-default";
 const SETTINGS_CANCEL_ID: &str = "talkdown-settings-cancel";
 const SETTINGS_APPLY_ID: &str = "talkdown-settings-apply";
 const WINDOW_SIZE: (f32, f32) = (1_180.0, 780.0);
 const MIN_WINDOW_SIZE: (f32, f32) = (940.0, 640.0);
-const DEFAULT_TEXT_SCALE_PERCENT: u16 = 100;
-const MIN_TEXT_SCALE_PERCENT: u16 = 80;
-const MAX_TEXT_SCALE_PERCENT: u16 = 200;
+const DEFAULT_TEXT_SCALE_PERCENT: u16 = model::DEFAULT_TEXT_SCALE_PERCENT;
+const MIN_TEXT_SCALE_PERCENT: u16 = model::MIN_TEXT_SCALE_PERCENT;
+const MAX_TEXT_SCALE_PERCENT: u16 = model::MAX_TEXT_SCALE_PERCENT;
 const TEXT_SCALE_STEP_PERCENT: i16 = 10;
-const DEFAULT_UI_SCALE_PERCENT: u16 = 100;
-const MIN_UI_SCALE_PERCENT: u16 = 80;
-const MAX_UI_SCALE_PERCENT: u16 = 140;
+const DEFAULT_UI_SCALE_PERCENT: u16 = model::DEFAULT_UI_SCALE_PERCENT;
+const MIN_UI_SCALE_PERCENT: u16 = model::MIN_UI_SCALE_PERCENT;
+const MAX_UI_SCALE_PERCENT: u16 = model::MAX_UI_SCALE_PERCENT;
 const UI_SCALE_STEP_PERCENT: i16 = 10;
 
 const UI_FONT: Font = Font::new("Atkinson Hyperlegible Next");
@@ -330,6 +335,7 @@ enum NoticeSource {
     Editor,
     File,
     Speech,
+    Checker,
     Codex,
     Safety,
 }
@@ -340,6 +346,7 @@ impl NoticeSource {
             Self::Editor => "EDITOR",
             Self::File => "FILE",
             Self::Speech => "SPEECH",
+            Self::Checker => "CHECKER",
             Self::Codex => "CODEX",
             Self::Safety => "TEXT SAFETY",
         }
@@ -403,7 +410,10 @@ impl Notice {
         };
         let safety = match self.source {
             NoticeSource::File | NoticeSource::Safety => 10,
-            NoticeSource::Editor | NoticeSource::Speech | NoticeSource::Codex => 0,
+            NoticeSource::Editor
+            | NoticeSource::Speech
+            | NoticeSource::Checker
+            | NoticeSource::Codex => 0,
         };
         severity + safety
     }
@@ -465,6 +475,30 @@ struct SettingsDraft {
     ui_scale_percent: u16,
     word_wrap: bool,
     speech_model_path: Option<PathBuf>,
+    checking_provider: CheckingProvider,
+    codex_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexModelChoice {
+    CliDefault,
+    Model { model: String, display_name: String },
+}
+
+impl std::fmt::Display for CodexModelChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CliDefault => formatter.write_str("Codex CLI default"),
+            Self::Model {
+                model,
+                display_name,
+            } if model == display_name => formatter.write_str(model),
+            Self::Model {
+                model,
+                display_name,
+            } => write!(formatter, "{display_name} · {model}"),
+        }
+    }
 }
 
 struct ModelDownloadState {
@@ -511,6 +545,8 @@ enum Message {
     SettingsAdjustTextScale(i16),
     SettingsAdjustUiScale(i16),
     SettingsToggleWordWrap,
+    SettingsCheckingProviderSelected(CheckingProvider),
+    SettingsCodexModelSelected(CodexModelChoice),
     SettingsChooseModel,
     SettingsModelChosen(Option<PathBuf>),
     SettingsUseDefaultModel,
@@ -561,12 +597,20 @@ struct App {
     ui_scale_percent: u16,
     speech_model_path: Option<PathBuf>,
     speech_model_source: ModelSource,
+    checking_provider: CheckingProvider,
+    harper: HarperChecker,
+    last_harper_audit: Option<LintAudit>,
+    checker_status: String,
+    codex_model: Option<String>,
+    codex_models: Vec<CodexModel>,
     settings: Option<SettingsDraft>,
     model_picker_open: bool,
     model_download: Option<ModelDownloadState>,
     model_download_error: Option<String>,
     #[cfg(test)]
     test_default_model_path: Option<PathBuf>,
+    #[cfg(test)]
+    test_saved_preferences: Option<model::AppPreferences>,
     window_focused: bool,
     file_busy: bool,
     notice: Notice,
@@ -630,11 +674,14 @@ impl App {
             }
         }
 
+        let preferences = model::load_preferences().unwrap_or_default();
         let initial_model = model::initial_model();
         let speech = SpeechBridge::start_with_model(initial_model.path.clone());
-        let mut app = Self::from_parts(file, document, notice, speech, CodexBridge::start());
+        let codex = CodexBridge::start_with_model(preferences.codex_model.clone());
+        let mut app = Self::from_parts(file, document, notice, speech, codex);
         app.speech_model_path = initial_model.path;
         app.speech_model_source = initial_model.source;
+        app.restore_preferences(preferences);
         app.model_download_error = initial_model.warning;
 
         (app, operation::focus(EDITOR_ID))
@@ -658,12 +705,22 @@ impl App {
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
             speech_model_path: None,
             speech_model_source: ModelSource::Unset,
+            checking_provider: CheckingProvider::default(),
+            harper: HarperChecker::default(),
+            last_harper_audit: None,
+            checker_status:
+                "Harper is ready. Applied and ignored findings from the latest local check will appear here."
+                    .into(),
+            codex_model: None,
+            codex_models: Vec::new(),
             settings: None,
             model_picker_open: false,
             model_download: None,
             model_download_error: None,
             #[cfg(test)]
             test_default_model_path: None,
+            #[cfg(test)]
+            test_saved_preferences: None,
             window_focused: true,
             file_busy: false,
             notice,
@@ -729,6 +786,57 @@ impl App {
         self.scale_window_task()
     }
 
+    fn persist_preferences(&mut self) -> Result<(), String> {
+        let preferences = model::AppPreferences {
+            speech_model_path: self.speech_model_path.clone(),
+            checking_provider: self.checking_provider,
+            codex_model: self.codex_model.clone(),
+            text_scale_percent: self.text_scale_percent,
+            ui_scale_percent: self.ui_scale_percent,
+            word_wrap: self.word_wrap,
+        };
+
+        #[cfg(test)]
+        {
+            self.test_saved_preferences = Some(preferences);
+            Ok(())
+        }
+
+        #[cfg(not(test))]
+        {
+            model::save_preferences(&preferences)
+        }
+    }
+
+    fn restore_preferences(&mut self, preferences: model::AppPreferences) {
+        self.checking_provider = preferences.checking_provider;
+        self.codex_model = preferences.codex_model;
+        self.text_scale_percent = preferences
+            .text_scale_percent
+            .clamp(MIN_TEXT_SCALE_PERCENT, MAX_TEXT_SCALE_PERCENT);
+        self.ui_scale_percent = preferences
+            .ui_scale_percent
+            .clamp(MIN_UI_SCALE_PERCENT, MAX_UI_SCALE_PERCENT);
+        self.word_wrap = preferences.word_wrap;
+        self.refresh_checker_status();
+    }
+
+    fn persist_preferences_or_warn(&mut self) {
+        if let Err(error) = self.persist_preferences() {
+            self.set_notice(
+                Notice::new(
+                    NoticeSource::Editor,
+                    UiState::Warning,
+                    "Preference changed for this session",
+                    error,
+                )
+                .recovery(
+                    "The change is active now, but it may need to be selected again after restarting Talkdown.",
+                ),
+            );
+        }
+    }
+
     fn mode_help(&self) -> (&'static str, &'static str) {
         if let Some(active) = &self.active_utterance {
             if active.finish_requested {
@@ -785,6 +893,8 @@ impl App {
                 Message::SettingsAdjustTextScale(_)
                     | Message::SettingsAdjustUiScale(_)
                     | Message::SettingsToggleWordWrap
+                    | Message::SettingsCheckingProviderSelected(_)
+                    | Message::SettingsCodexModelSelected(_)
                     | Message::SettingsChooseModel
                     | Message::SettingsModelChosen(_)
                     | Message::SettingsUseDefaultModel
@@ -990,29 +1100,43 @@ impl App {
                 Task::none()
             }
             Message::AdjustTextScale(delta) => {
+                let previous = self.text_scale_percent;
                 self.text_scale_percent = (i32::from(self.text_scale_percent) + i32::from(delta))
                     .clamp(
                         i32::from(MIN_TEXT_SCALE_PERCENT),
                         i32::from(MAX_TEXT_SCALE_PERCENT),
                     ) as u16;
                 self.set_transient_notice(self.default_notice());
+                if self.text_scale_percent != previous {
+                    self.persist_preferences_or_warn();
+                }
                 Task::none()
             }
             Message::AdjustUiScale(delta) => {
+                let previous = self.ui_scale_percent;
                 let scale_percent = (i32::from(self.ui_scale_percent) + i32::from(delta)).clamp(
                     i32::from(MIN_UI_SCALE_PERCENT),
                     i32::from(MAX_UI_SCALE_PERCENT),
                 ) as u16;
-                self.set_ui_scale_percent(scale_percent)
+                let task = self.set_ui_scale_percent(scale_percent);
+                if self.ui_scale_percent != previous {
+                    self.persist_preferences_or_warn();
+                }
+                task
             }
             Message::OpenSettings => {
-                if self.active_utterance.is_none() && self.mode != Mode::Command && !self.file_busy
+                if self.active_utterance.is_none()
+                    && self.mode != Mode::Command
+                    && !self.file_busy
+                    && self.pending.is_empty()
                 {
                     self.settings = Some(SettingsDraft {
                         text_scale_percent: self.text_scale_percent,
                         ui_scale_percent: self.ui_scale_percent,
                         word_wrap: self.word_wrap,
                         speech_model_path: self.speech_model_path.clone(),
+                        checking_provider: self.checking_provider,
+                        codex_model: self.codex_model.clone(),
                     });
                 }
                 Task::none()
@@ -1040,6 +1164,21 @@ impl App {
             Message::SettingsToggleWordWrap => {
                 if let Some(settings) = self.settings.as_mut() {
                     settings.word_wrap = !settings.word_wrap;
+                }
+                Task::none()
+            }
+            Message::SettingsCheckingProviderSelected(provider) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.checking_provider = provider;
+                }
+                Task::none()
+            }
+            Message::SettingsCodexModelSelected(choice) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.codex_model = match choice {
+                        CodexModelChoice::CliDefault => None,
+                        CodexModelChoice::Model { model, .. } => Some(model),
+                    };
                 }
                 Task::none()
             }
@@ -1118,8 +1257,12 @@ impl App {
                     return Task::none();
                 };
                 let model_changed = settings.speech_model_path != self.speech_model_path;
+                let codex_model_changed = settings.codex_model != self.codex_model;
                 self.word_wrap = settings.word_wrap;
                 self.text_scale_percent = settings.text_scale_percent;
+                self.checking_provider = settings.checking_provider;
+                self.refresh_checker_status();
+                self.codex_model.clone_from(&settings.codex_model);
                 let scale_task = self.set_ui_scale_percent(settings.ui_scale_percent);
                 if model_changed {
                     let path = settings.speech_model_path;
@@ -1136,21 +1279,25 @@ impl App {
                     self.speech = SpeechBridge::start_with_model(path.clone());
                     self.speech_state = UiState::Working;
                     self.speech_status = "Speech: loading the selected model…".into();
-                    if let Some(path) = path
-                        && let Err(error) = model::save_model_path(&path)
-                    {
-                        self.set_notice(
-                            Notice::new(
-                                NoticeSource::Speech,
-                                UiState::Warning,
-                                "Model changed for this session",
-                                error,
-                            )
-                            .recovery(
-                                "The selected model is loading now, but choose it again after restarting Talkdown.",
-                            ),
-                        );
-                    }
+                }
+                if codex_model_changed {
+                    self.codex = CodexBridge::start_with_model(self.codex_model.clone());
+                    self.codex_state = UiState::Working;
+                    self.codex_status = "Codex: restarting with the selected model…".into();
+                    self.codex_preview.clear();
+                }
+                if let Err(error) = self.persist_preferences() {
+                    self.set_notice(
+                        Notice::new(
+                            NoticeSource::Editor,
+                            UiState::Warning,
+                            "Settings applied for this session",
+                            error,
+                        )
+                        .recovery(
+                            "The changes are active now, but they may need to be selected again after restarting Talkdown.",
+                        ),
+                    );
                 }
                 Task::batch([scale_task, operation::focus(EDITOR_ID)])
             }
@@ -1317,16 +1464,20 @@ impl App {
             tooltip::Position::Bottom,
         );
 
-        let can_open_settings =
-            self.active_utterance.is_none() && self.mode != Mode::Command && !self.file_busy;
+        let can_open_settings = self.active_utterance.is_none()
+            && self.mode != Mode::Command
+            && !self.file_busy
+            && self.pending.is_empty();
         let settings_help = if self.active_utterance.is_some() {
             "Finish or cancel the current recording before opening settings."
         } else if self.mode == Mode::Command {
             "Submit or cancel the typed command before opening settings."
         } else if self.file_busy {
             "Wait for the current file operation to finish before opening settings."
+        } else if !self.pending.is_empty() {
+            "Wait for the current Codex edit to finish before changing its model."
         } else {
-            "Adjust editor text, interface scale, and word wrap. Shortcut: Ctrl/Cmd+,"
+            "Adjust appearance, dictation checking, speech, and the Codex model. Shortcut: Ctrl/Cmd+,"
         };
         let settings_control = container(contextual_tooltip(
             quiet_toolbar_button(
@@ -1561,6 +1712,18 @@ impl App {
                 &self.speech_status,
             ),
             service_chip(CODEX_PILL_ID, "Codex", self.codex_state, &self.codex_status,),
+            service_chip(
+                CHECKER_PILL_ID,
+                "Checker",
+                if self.checking_provider == CheckingProvider::Harper
+                    && self.last_harper_audit.is_some()
+                {
+                    UiState::Success
+                } else {
+                    UiState::Ready
+                },
+                &self.checker_status,
+            ),
         ]
         .spacing(8)
         .align_y(Center);
@@ -1746,7 +1909,11 @@ impl App {
                     .map(|download| (download.downloaded, download.total, download.cancelling)),
                 error: self.model_download_error.clone(),
             };
-            stack([workspace, settings_modal(settings.clone(), model_view)]).into()
+            stack([
+                workspace,
+                settings_modal(settings.clone(), model_view, self.codex_models.clone()),
+            ])
+            .into()
         } else {
             workspace
         }
@@ -1793,6 +1960,22 @@ impl App {
         if !self.notice.is_sticky() {
             self.notice = notice;
         }
+    }
+
+    fn refresh_checker_status(&mut self) {
+        self.checker_status = match self.checking_provider {
+            CheckingProvider::Harper => self.last_harper_audit.as_ref().map_or_else(
+                || {
+                    "Harper is ready. Applied and ignored findings from the latest local check will appear here."
+                        .to_owned()
+                },
+                lint_audit_summary,
+            ),
+            CheckingProvider::Codex => {
+                "Codex checks literal dictation with document context. Local Harper lint records are paused; contextual commands also use Codex."
+                    .to_owned()
+            }
+        };
     }
 
     fn default_notice(&self) -> Notice {
@@ -2341,17 +2524,90 @@ impl App {
             return;
         }
 
-        let mut refinement = self.document.snapshot();
-        refinement.cursor = range.start + raw.len();
-        refinement.selection = Some(range.start..range.start + raw.len());
         let changed = self.document.revision() != revision_before;
-        self.set_notice(Notice::new(
-            NoticeSource::Codex,
-            UiState::Working,
-            "Transcript inserted; requesting bounded refinement",
-            "The raw words are already in the local buffer. Codex may only propose a replacement for that captured span.",
-        ));
-        self.submit_codex(refinement, raw, EditIntent::Insert, changed);
+        match self.checking_provider {
+            CheckingProvider::Harper => {
+                let checked = self.harper.check(&transcript);
+                let applied = checked.audit.fixes();
+                let ignored = checked.audit.ignored_count();
+                self.checker_status = lint_audit_summary(&checked.audit);
+                self.last_harper_audit = Some(checked.audit);
+                let corrected = fit_literal(&anchor, &checked.text);
+                if corrected != raw {
+                    match self.document.amend_last_replace(
+                        range.start..range.start + raw.len(),
+                        &corrected,
+                    ) {
+                        Ok(()) => self.set_notice(Notice::new(
+                            NoticeSource::Checker,
+                            UiState::Success,
+                            "Dictation checked locally",
+                            format!(
+                                "Harper applied {} unambiguous grammar {}. One Undo restores the text from before dictation.",
+                                applied,
+                                if applied == 1 { "fix" } else { "fixes" }
+                            ),
+                        )
+                        .recovery(if ignored == 0 {
+                            "Hover over Checker to review the applied lint record."
+                        } else {
+                            "Hover over Checker to review applied and ignored lint records."
+                        })),
+                        Err(error) => {
+                            let mut audit = self
+                                .last_harper_audit
+                                .take()
+                                .expect("the current Harper audit was just recorded");
+                            audit.reject_applied(IgnoreReason::ApplicationFailed);
+                            self.checker_status = lint_audit_summary(&audit);
+                            self.last_harper_audit = Some(audit);
+                            self.set_notice(
+                                Notice::new(
+                                    NoticeSource::Safety,
+                                    UiState::Error,
+                                    "Local grammar correction was skipped",
+                                    format!(
+                                        "The trusted replacement failed validation: {error:?}."
+                                    ),
+                                )
+                                .recovery(
+                                    "The raw transcript remains in the document; Harper did not roll it back.",
+                                ),
+                            )
+                        }
+                    }
+                } else {
+                    self.set_transient_notice(
+                        Notice::new(
+                            NoticeSource::Checker,
+                            UiState::Success,
+                            "Dictation inserted",
+                            if ignored == 0 {
+                                "Harper found no local issues. No network request was made.".to_owned()
+                            } else {
+                                format!(
+                                    "Harper recorded {ignored} lint {} but left the text unchanged. Hover over Checker for the reasons. No network request was made.",
+                                    if ignored == 1 { "suggestion" } else { "suggestions" }
+                                )
+                            },
+                        )
+                        .contextual(),
+                    );
+                }
+            }
+            CheckingProvider::Codex => {
+                let mut refinement = self.document.snapshot();
+                refinement.cursor = range.start + raw.len();
+                refinement.selection = Some(range.start..range.start + raw.len());
+                self.set_notice(Notice::new(
+                    NoticeSource::Codex,
+                    UiState::Working,
+                    "Transcript inserted; requesting bounded refinement",
+                    "The raw words are already in the local buffer. Codex may only propose a replacement for that captured span.",
+                ));
+                self.submit_codex(refinement, raw, EditIntent::Insert, changed);
+            }
+        }
     }
 
     fn submit_codex(
@@ -2478,14 +2734,17 @@ impl App {
                 self.codex_state = UiState::Working;
                 self.codex_status = "Codex: connecting to the signed-in app-server…".into();
             }
-            CodexEvent::Ready { plan } => {
+            CodexEvent::Models(models) => {
+                self.codex_models = models;
+            }
+            CodexEvent::Ready { plan, model } => {
                 if self.pending.is_empty() {
                     self.codex_state = UiState::Ready;
-                    self.codex_status = format!("Codex: ChatGPT {plan}");
+                    self.codex_status = format!("Codex: ChatGPT {plan} · {model}");
                 } else {
                     self.codex_state = UiState::Working;
                     self.codex_status = format!(
-                        "Codex: ChatGPT {plan} · {} edit{} pending",
+                        "Codex: {model} · {} edit{} pending",
                         self.pending.len(),
                         if self.pending.len() == 1 { "" } else { "s" }
                     );
@@ -2998,9 +3257,10 @@ fn settings_section_label(label: &'static str) -> Element<'static, Message> {
 
 fn settings_preference(
     title: &'static str,
-    detail: &'static str,
+    detail: impl Into<String>,
     control: impl Into<Element<'static, Message>>,
 ) -> Element<'static, Message> {
+    let detail = detail.into();
     container(
         row![
             column![
@@ -3317,6 +3577,7 @@ fn settings_scale_controls(control: SettingsScaleControl) -> Element<'static, Me
 fn settings_modal(
     settings: SettingsDraft,
     model_view: ModelSettingsView,
+    codex_models: Vec<CodexModel>,
 ) -> Element<'static, Message> {
     let text_scale_controls = settings_scale_controls(SettingsScaleControl {
         value: settings.text_scale_percent,
@@ -3375,7 +3636,94 @@ fn settings_modal(
         "Wrap long lines visually at the editor edge. The file itself is never reformatted.",
         wrap_toggle,
     );
-    let model_busy = model_view.picker_open || model_view.download.is_some();
+    let checker_control = container(
+        pick_list(
+            Some(settings.checking_provider),
+            CheckingProvider::ALL,
+            |provider| provider.to_string(),
+        )
+        .width(190)
+        .text_size(BODY_SIZE)
+        .on_select(Message::SettingsCheckingProviderSelected),
+    )
+    .id(SETTINGS_CHECKER_ID);
+    let checker = settings_preference(
+        "Dictation checker",
+        match settings.checking_provider {
+            CheckingProvider::Harper => {
+                "Harper applies conservative grammar fixes locally. It makes no network request; contextual commands still use Codex."
+            }
+            CheckingProvider::Codex => {
+                "Codex uses document context for richer dictation refinement through your ChatGPT subscription."
+            }
+        },
+        checker_control,
+    );
+
+    let mut codex_choices = vec![CodexModelChoice::CliDefault];
+    codex_choices.extend(codex_models.iter().map(|entry| CodexModelChoice::Model {
+        model: entry.model.clone(),
+        display_name: entry.display_name.clone(),
+    }));
+    let selected_codex_choice =
+        settings
+            .codex_model
+            .as_ref()
+            .map_or(CodexModelChoice::CliDefault, |selected| {
+                codex_models
+                    .iter()
+                    .find(|entry| &entry.model == selected)
+                    .map_or_else(
+                        || CodexModelChoice::Model {
+                            model: selected.clone(),
+                            display_name: "Unavailable".into(),
+                        },
+                        |entry| CodexModelChoice::Model {
+                            model: entry.model.clone(),
+                            display_name: entry.display_name.clone(),
+                        },
+                    )
+            });
+    if !codex_choices.contains(&selected_codex_choice) {
+        codex_choices.push(selected_codex_choice.clone());
+    }
+    let codex_detail = match settings.codex_model.as_deref() {
+        None if codex_models.is_empty() => {
+            "Use the Codex CLI default. Available models will appear after app-server connects."
+                .to_owned()
+        }
+        None => "Use the default chosen by the installed Codex CLI.".to_owned(),
+        Some(selected) => codex_models
+            .iter()
+            .find(|entry| entry.model == selected)
+            .map(|entry| {
+                if entry.description.is_empty() {
+                    format!("Use {} for contextual commands and optional AI dictation checking.", entry.display_name)
+                } else {
+                    compact_copy(&entry.description, 120)
+                }
+            })
+            .unwrap_or_else(|| {
+                "This saved model is not advertised by the connected Codex CLI. Choose another model before applying."
+                    .to_owned()
+            }),
+    };
+    let codex_model_control = container(
+        pick_list(Some(selected_codex_choice), codex_choices, |choice| {
+            choice.to_string()
+        })
+        .width(270)
+        .text_size(BODY_SIZE)
+        .on_select(Message::SettingsCodexModelSelected),
+    )
+    .id(SETTINGS_CODEX_MODEL_ID);
+    let codex_model = settings_preference("Codex model", codex_detail, codex_model_control);
+    let codex_model_available = settings.codex_model.is_none()
+        || codex_models
+            .iter()
+            .any(|entry| Some(entry.model.as_str()) == settings.codex_model.as_deref());
+    let model_busy =
+        model_view.picker_open || model_view.download.is_some() || !codex_model_available;
     let speech_model = settings_model_preference(settings.speech_model_path.clone(), model_view);
 
     let cancel = settings_action_button(
@@ -3391,6 +3739,24 @@ fn settings_modal(
         (!model_busy).then_some(Message::ApplySettings),
     );
 
+    let preferences = scrollable(
+        column![
+            settings_section_label("APPEARANCE"),
+            text_scale,
+            ui_scale,
+            settings_section_label("EDITOR"),
+            editor,
+            settings_section_label("CHECKING"),
+            checker,
+            codex_model,
+            settings_section_label("SPEECH"),
+            speech_model,
+        ]
+        .spacing(10),
+    )
+    .id(SETTINGS_SCROLL_ID)
+    .height(Fill);
+
     let modal = container(
         column![
             row![
@@ -3399,7 +3765,7 @@ fn settings_modal(
                         .font(UI_BOLD_FONT)
                         .size(LEAD_SIZE)
                         .color(ui::TEXT),
-                    text("Session preferences")
+                    text("Saved preferences")
                         .font(UI_FONT)
                         .size(BODY_SIZE)
                         .color(ui::SUBTLE),
@@ -3407,7 +3773,7 @@ fn settings_modal(
                 .spacing(2)
                 .width(Fill),
                 container(
-                    text("LOCAL")
+                    text("STAGED")
                         .font(EDITOR_FONT)
                         .size(CAPTION_SIZE)
                         .color(ui::PRIMARY),
@@ -3417,22 +3783,20 @@ fn settings_modal(
             ]
             .align_y(Center),
             container(space()).width(Fill).height(1).style(ui::rule),
-            settings_section_label("APPEARANCE"),
-            text_scale,
-            ui_scale,
-            settings_section_label("EDITOR"),
-            editor,
-            settings_section_label("SPEECH"),
-            speech_model,
+            preferences,
             text("Keyboard: +/− text · Ctrl/Cmd +/− UI · W wrap · Enter apply · Escape cancel")
                 .font(UI_FONT)
                 .size(CAPTION_SIZE)
                 .color(ui::SUBTLE),
             row![
                 text(if model_busy {
-                    "Finish or cancel the model action before applying."
+                    if !codex_model_available {
+                        "Choose an available Codex model before applying."
+                    } else {
+                        "Finish or cancel the model action before applying."
+                    }
                 } else {
-                    "Changes apply together."
+                    "Changes apply together and are saved for the next launch."
                 })
                 .font(UI_FONT)
                 .size(CAPTION_SIZE)
@@ -3447,7 +3811,8 @@ fn settings_modal(
         .spacing(12),
     )
     .id(SETTINGS_MODAL_ID)
-    .width(640)
+    .width(700)
+    .height(Fill)
     .padding(20)
     .style(ui::modal_card);
 
@@ -3541,6 +3906,77 @@ fn contextual_tooltip<'a>(
         .into()
 }
 
+fn lint_audit_summary(audit: &LintAudit) -> String {
+    const SHOWN_PER_DECISION: usize = 3;
+
+    let mut sections = vec![format!(
+        "Latest local check: {} applied · {} ignored.",
+        audit.fixes(),
+        audit.ignored_count()
+    )];
+
+    if !audit.applied.is_empty() {
+        let records = audit
+            .applied
+            .iter()
+            .take(SHOWN_PER_DECISION)
+            .map(lint_record_summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        sections.push(format!(
+            "Applied — {records}{}",
+            omitted_suffix(audit.applied.len())
+        ));
+    }
+
+    if !audit.ignored.is_empty() {
+        let records = audit
+            .ignored
+            .iter()
+            .take(SHOWN_PER_DECISION)
+            .map(|ignored| {
+                format!(
+                    "{} ({})",
+                    lint_record_summary(&ignored.lint),
+                    ignored.reason
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        sections.push(format!(
+            "Ignored — {records}{}",
+            omitted_suffix(audit.ignored.len())
+        ));
+    }
+
+    sections.join("\n")
+}
+
+fn lint_record_summary(lint: &LintRecord) -> String {
+    let proposal = lint
+        .suggestions
+        .first()
+        .map(|suggestion| format!(" · {suggestion}"))
+        .unwrap_or_default();
+    format!(
+        "{} {}–{}: {}{}",
+        lint.kind,
+        lint.span.start,
+        lint.span.end,
+        compact_copy(&lint.message, 96),
+        proposal
+    )
+}
+
+fn omitted_suffix(total: usize) -> String {
+    total
+        .checked_sub(3)
+        .filter(|omitted| *omitted > 0)
+        .map_or_else(String::new, |omitted| {
+            format!("; +{omitted} more recorded in memory")
+        })
+}
+
 fn service_chip<'a>(
     id: &'static str,
     name: &'static str,
@@ -3591,6 +4027,7 @@ fn service_chip<'a>(
         match name {
             "Speech" => "Speech service",
             "Codex" => "Codex service",
+            "Checker" => "Dictation checker",
             _ => name,
         },
         detail,
@@ -3930,13 +4367,17 @@ mod tests {
             text_editor::Action::Move(text_editor::Motion::DocumentEnd),
             false,
         );
-        let app = App::from_parts(
+        let mut app = App::from_parts(
             None,
             document,
             fixture_notice("Test fixture"),
             speech,
             codex,
         );
+        // Most existing intercepted fixtures exercise the historical Codex
+        // refinement path explicitly. Individual Harper tests opt back into
+        // the product default.
+        app.checking_provider = CheckingProvider::Codex;
         (app, speech_driver, codex_driver)
     }
 
@@ -3984,6 +4425,15 @@ mod tests {
             let position = ui.find(id(hovered_id))?.bounds().center();
             ui.point_at(position);
             let _ = ui.simulate([Event::Mouse(iced::mouse::Event::CursorMoved { position })]);
+        }
+        if name == "model-download-window" {
+            let position = ui.find(id(SETTINGS_SCROLL_ID))?.bounds().center();
+            ui.point_at(position);
+            for _ in 0..4 {
+                let _ = ui.simulate([Event::Mouse(iced::mouse::Event::WheelScrolled {
+                    delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -12.0 },
+                })]);
+            }
         }
         let snapshot = ui.snapshot(&theme)?;
         let snapshot_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
@@ -4685,6 +5135,36 @@ mod tests {
 
     #[test]
     #[ignore = "visual regression; run with ICED_TEST_BACKEND=tiny-skia"]
+    fn iced_checker_audit_window_snapshot() -> Result<(), Error> {
+        let (mut app, _speech, _codex) = test_app(
+            "# Dictation audit\n\nThe local checker keeps a reviewable decision record.\n",
+        );
+        app.file = Some(PathBuf::from("notes/dictation-audit.md"));
+        app.speech_state = UiState::Ready;
+        app.codex_state = UiState::Ready;
+        app.speech_status = "Speech: ggml-base.en.bin · Injected PCM".into();
+        app.codex_status = "Codex: ChatGPT subscription session ready".into();
+        app.checking_provider = CheckingProvider::Harper;
+        app.refresh_checker_status();
+
+        let anchor = app.document.snapshot();
+        app.optimistic_insert(anchor, "this is an test with wrds.".into());
+        assert!(
+            app.last_harper_audit
+                .as_ref()
+                .is_some_and(|audit| { !audit.applied.is_empty() && !audit.ignored.is_empty() })
+        );
+
+        assert_tiny_skia_snapshot(
+            &app,
+            "checker-audit-window",
+            WINDOW_SIZE,
+            Some(CHECKER_PILL_ID),
+        )
+    }
+
+    #[test]
+    #[ignore = "visual regression; run with ICED_TEST_BACKEND=tiny-skia"]
     fn iced_settings_window_snapshot() -> Result<(), Error> {
         let (mut app, _speech, _codex) = test_app(
             "# Writing session\n\nSettings should never disturb the document underneath.\n",
@@ -4694,12 +5174,20 @@ mod tests {
         app.codex_state = UiState::Ready;
         app.speech_status = "Speech: ggml-base.en.bin · Built-in microphone".into();
         app.codex_status = "Codex: ChatGPT subscription session ready".into();
+        app.codex_models = vec![CodexModel {
+            model: "gpt-5.3-codex".into(),
+            display_name: "GPT-5.3-Codex".into(),
+            description: "Strong coding and contextual editing model.".into(),
+            is_default: true,
+        }];
         app.notice = app.default_notice();
         app.settings = Some(SettingsDraft {
             text_scale_percent: 130,
             ui_scale_percent: 110,
             word_wrap: false,
             speech_model_path: Some(PathBuf::from("tests/fixtures/mock-ggml-model.bin")),
+            checking_provider: CheckingProvider::Harper,
+            codex_model: Some("gpt-5.3-codex".into()),
         });
 
         let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
@@ -4737,6 +5225,8 @@ mod tests {
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
             word_wrap: true,
             speech_model_path: None,
+            checking_provider: CheckingProvider::Codex,
+            codex_model: None,
         });
 
         let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
@@ -5118,6 +5608,12 @@ mod tests {
             let _ = app.update(Message::AdjustUiScale(-UI_SCALE_STEP_PERCENT));
         }
         assert_eq!(app.ui_scale_percent, MIN_UI_SCALE_PERCENT);
+        let saved = app
+            .test_saved_preferences
+            .as_ref()
+            .expect("zoom shortcut preferences");
+        assert_eq!(saved.text_scale_percent, MIN_TEXT_SCALE_PERCENT);
+        assert_eq!(saved.ui_scale_percent, MIN_UI_SCALE_PERCENT);
 
         let unchanged_physical_window = Size::new(
             WINDOW_SIZE.0 * DEFAULT_UI_SCALE_PERCENT as f32 / MAX_UI_SCALE_PERCENT as f32,
@@ -5163,6 +5659,8 @@ mod tests {
                 ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
                 word_wrap: true,
                 speech_model_path: None,
+                checking_provider: CheckingProvider::Codex,
+                codex_model: None,
             })
         );
         assert!(!app.should_keep_normal_cursor_visible());
@@ -5189,6 +5687,8 @@ mod tests {
                 ui_scale_percent: 110,
                 word_wrap: false,
                 speech_model_path: None,
+                checking_provider: CheckingProvider::Codex,
+                codex_model: None,
             })
         );
 
@@ -5213,6 +5713,14 @@ mod tests {
         assert_eq!(app.ui_scale_percent, 110);
         assert!(!app.word_wrap);
         assert_eq!(app.document.text(), original_text);
+        let saved = app
+            .test_saved_preferences
+            .as_ref()
+            .expect("applied settings preferences");
+        assert_eq!(saved.text_scale_percent, 110);
+        assert_eq!(saved.ui_scale_percent, 110);
+        assert!(!saved.word_wrap);
+        assert_eq!(saved.checking_provider, CheckingProvider::Codex);
 
         let _ = app.update(Message::OpenSettings);
         for key in ["-", "w"] {
@@ -5256,6 +5764,119 @@ mod tests {
     }
 
     #[test]
+    fn presentation_preferences_restore_into_application_state() {
+        let (mut app, _speech, _codex) = test_app("Safe text");
+
+        app.restore_preferences(model::AppPreferences {
+            speech_model_path: Some(PathBuf::from("/ignored/by-this-step.bin")),
+            checking_provider: CheckingProvider::Harper,
+            codex_model: Some("gpt-restored".into()),
+            text_scale_percent: 140,
+            ui_scale_percent: 120,
+            word_wrap: false,
+        });
+
+        assert_eq!(app.text_scale_percent, 140);
+        assert_eq!(app.ui_scale_percent, 120);
+        assert!(!app.word_wrap);
+        assert_eq!(app.checking_provider, CheckingProvider::Harper);
+        assert_eq!(app.codex_model.as_deref(), Some("gpt-restored"));
+        assert_eq!(app.speech_model_path, None);
+    }
+
+    #[test]
+    fn harper_checks_literal_dictation_locally_as_one_undo_step() {
+        let (mut app, _speech, codex) = test_app("Note: ");
+        app.checking_provider = CheckingProvider::Harper;
+        app.refresh_checker_status();
+        let anchor = app.document.snapshot();
+
+        app.optimistic_insert(anchor, "this is an test.".into());
+
+        assert_eq!(app.document.text(), "Note: this is a test.");
+        assert_eq!(app.notice.source, NoticeSource::Checker);
+        assert_eq!(app.notice.state, UiState::Success);
+        let audit = app.last_harper_audit.as_ref().expect("latest Harper audit");
+        assert_eq!(audit.fixes(), 1);
+        assert_eq!(audit.ignored_count(), 0);
+        assert!(app.checker_status.contains("1 applied · 0 ignored"));
+        assert!(app.pending.is_empty());
+        assert!(codex.try_request().is_none());
+        assert!(app.document.undo());
+        assert_eq!(app.document.text(), "Note: ");
+    }
+
+    #[test]
+    fn harper_records_ignored_findings_and_surfaces_the_audit() -> Result<(), Error> {
+        let (mut app, _speech, codex) = test_app("Note: ");
+        app.checking_provider = CheckingProvider::Harper;
+        app.refresh_checker_status();
+        let anchor = app.document.snapshot();
+
+        app.optimistic_insert(anchor, "Talkdown uses Koranir's wrds.".into());
+
+        assert_eq!(app.document.text(), "Note: Talkdown uses Koranir's wrds.");
+        let audit = app.last_harper_audit.as_ref().expect("latest Harper audit");
+        assert_eq!(audit.fixes(), 0);
+        assert!(audit.ignored_count() >= 1);
+        assert!(audit.ignored.iter().any(|ignored| {
+            ignored.lint.kind == harper_core::linting::LintKind::Spelling
+                && ignored.reason == crate::checker::IgnoreReason::PolicyExcluded
+        }));
+        assert!(app.checker_status.contains("ignored"));
+        assert!(app.notice.detail.contains("left the text unchanged"));
+        assert!(codex.try_request().is_none());
+
+        let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+        let _ = ui.find(id(CHECKER_PILL_ID))?;
+        Ok(())
+    }
+
+    #[test]
+    fn settings_stage_checker_and_advertised_codex_model() -> Result<(), Error> {
+        let (mut app, _speech, _codex) = test_app("Safe text");
+        let advertised = CodexModel {
+            model: "gpt-test-codex".into(),
+            display_name: "GPT Test Codex".into(),
+            description: "Fast deterministic fixture model.".into(),
+            is_default: false,
+        };
+        app.handle_codex(CodexEvent::Models(vec![advertised.clone()]));
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::SettingsCheckingProviderSelected(
+            CheckingProvider::Harper,
+        ));
+        let _ = app.update(Message::SettingsCodexModelSelected(
+            CodexModelChoice::Model {
+                model: advertised.model.clone(),
+                display_name: advertised.display_name.clone(),
+            },
+        ));
+
+        assert_eq!(
+            app.settings
+                .as_ref()
+                .map(|settings| settings.checking_provider),
+            Some(CheckingProvider::Harper)
+        );
+        assert_eq!(
+            app.settings
+                .as_ref()
+                .and_then(|settings| settings.codex_model.as_deref()),
+            Some("gpt-test-codex")
+        );
+        let mut ui = Simulator::with_size(Settings::default(), WINDOW_SIZE, app.view());
+        let _ = ui.find(id(SETTINGS_CHECKER_ID))?;
+        let _ = ui.find(id(SETTINGS_CODEX_MODEL_ID))?;
+        drop(ui);
+
+        let _ = app.update(Message::CancelSettings);
+        assert_eq!(app.checking_provider, CheckingProvider::Codex);
+        assert_eq!(app.codex_model, None);
+        Ok(())
+    }
+
+    #[test]
     fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), Error> {
         let (mut app, _speech, _codex) = test_app("Safe text");
         let _ = app.update(Message::OpenSettings);
@@ -5280,7 +5901,7 @@ mod tests {
         );
 
         let cancel_messages = {
-            let mut ui = iced_test::simulator(app.view());
+            let mut ui = Simulator::with_size(Settings::default(), (1_180.0, 1_080.0), app.view());
             let _ = ui.find("Downloading and verifying… 50% · 74 / 147 MB")?;
             let _ = ui.click(id(SETTINGS_MODEL_DEFAULT_ID))?;
             ui.into_messages().collect::<Vec<_>>()

@@ -67,21 +67,37 @@ every mode. The footer deliberately omits both percentages and displays the
 compact `I insert · : cmd · +/- text` shortcut cue. Each UI
 adjustment reapplies the window's 940 × 640 logical minimum and actively grows an undersized logical
 dimension after zooming; it does not alter the document, cursor, or revision.
-Routine zoom feedback is contextual and does not open a banner. Zoom is not persisted yet.
+Routine zoom feedback is contextual and does not open a banner. A successful
+shortcut adjustment persists both zoom scopes for the next launch.
 
 The toolbar Settings button and Ctrl/Cmd+comma open a staged modal for editor
-text, interface scale, visual word wrap, and the local transcription model.
+text, interface scale, visual word wrap, the dictation-checking provider, the
+Codex model, and the local transcription model.
 Apply commits the staged values and restarts the speech worker only when its
 selected model changed; Cancel or Escape discards the staged selection. The
-model path is persisted atomically in the platform configuration directory. At
+speech-model path, checking provider, Codex model, editor-text scale, interface
+scale, and word wrap are persisted atomically
+in the platform configuration directory. At
 launch, `TALKDOWN_WHISPER_MODEL` takes precedence, followed by that saved path,
-then an installed default. Presentation preferences remain session-local.
-While the modal is open, an opaque stack layer blocks pointer
+then an installed default. Unit tests intercept preference writes instead of
+touching the user's platform configuration file.
+Harper is the default literal-dictation checker. It runs fully locally and
+auto-applies only conservative single-suggestion fixes. Its latest in-memory
+audit records every applied finding and every skipped finding, with explicit
+policy, ambiguity, missing-suggestion, overlap, or document-validation reasons;
+hover the Checker pill to inspect the bounded presentation. Never persist or externally log that
+audit because Harper messages can repeat dictated text. Choosing Codex enables
+the richer context-aware refinement path. Contextual commands always use Codex.
+The Codex choices come from the connected app-server's `model/list` response;
+changing the selection starts a new ephemeral thread after Apply. While the
+modal is open, an opaque stack layer blocks pointer
 input and the update guard rejects underlying editor commands. Inside the
 modal, plain `+`/`-` stages editor text,
 Ctrl/Cmd `+`/`-` stages UI scale, `W` toggles wrap, Enter applies, and Escape
 cancels. Keep the committed values separate from
-`SettingsDraft` when adding fields or persistence.
+`SettingsDraft` when adding fields or persistence. Settings also waits for any
+pending Codex edit to finish before opening, so changing its model cannot strand
+an in-flight edit.
 
 Pinned iced has no text-editor caret style or blink-control API. Talkdown keeps
 the focused Normal-mode caret steady with a 250 ms focus/blink-epoch refresh.
@@ -201,9 +217,9 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 59 tests: 48 run and eleven are
-ignored. The no-default-feature build discovers 52: 44 run and eight are
-ignored. The README lists all eleven ignored tests.
+The default-feature build currently discovers 72 tests: 60 run and twelve are
+ignored. The no-default-feature build discovers 65: 56 run and nine are
+ignored. The README lists all twelve ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a
 real whisper.cpp model, and run:
@@ -226,19 +242,22 @@ remain repeatable.
 The full-window visual tests use iced's tiny-skia backend and the committed
 baselines `tests/snapshots/main-window-tiny-skia.png`,
 `tests/snapshots/contextual-help-window-tiny-skia.png`,
+`tests/snapshots/checker-audit-window-tiny-skia.png`,
 `tests/snapshots/settings-window-tiny-skia.png`,
 `tests/snapshots/model-download-window-tiny-skia.png`,
 `tests/snapshots/failure-window-tiny-skia.png`, and
 `tests/snapshots/minimum-window-tiny-skia.png`. They respectively cover a
 ready/success state, the hovered Normal-mode tooltip with its routine banner
-collapsed, the staged settings modal, a model-download failure with recovery,
+collapsed, a hovered applied/ignored Checker audit, the staged settings modal,
+a model-download failure with recovery,
 an unavailable Codex refinement with its
 raw transcript preserved, and the maximum 140% scale state at the enforced
 940 × 640 logical minimum. The
 minimum fixture hovers the offline Speech pill while its foreground error
 notice remains visible and also asserts that critical controls are visible,
 the voice heading and service chips align vertically, and footer cursor
-metadata remains centered. Run all six with the shared
+metadata remains centered. A seventh fixture hovers the Checker pill after a
+pass containing both applied and ignored findings. Run all seven with the shared
 `window_snapshot` filter:
 
 ```sh
@@ -256,13 +275,14 @@ TALKDOWN_UPDATE_SNAPSHOTS=1 ICED_TEST_BACKEND=tiny-skia \
 ```
 
 The iced helper does not overwrite existing baselines. For an intentional
-refresh, preserve and move all six files aside, then run the same creation
+refresh, preserve and move all seven files aside, then run the same creation
 command and review all replacements before keeping them:
 
 ```sh
 snapshot_backup_dir="$(mktemp -d /tmp/talkdown-snapshots.XXXXXX)"
 mv tests/snapshots/main-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/contextual-help-window-tiny-skia.png "$snapshot_backup_dir/"
+mv tests/snapshots/checker-audit-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/settings-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/model-download-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/failure-window-tiny-skia.png "$snapshot_backup_dir/"

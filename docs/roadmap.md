@@ -28,9 +28,9 @@ rather than capture an entire desktop or change a user's global audio default.
   names both the text-safety outcome and the next step.
 - Group adjacent typed Insert-mode characters into sensible undo transactions.
 - Add search, select-all status, and a minimal command palette.
-- Persist the remaining harmless preferences outside the document. Model-path
-  persistence is implemented; editor text, interface scale, wrap, theme,
-  language, and device remain session-only.
+- Persist the remaining harmless preferences outside the document. Speech and
+  Codex model selections, checking provider, editor text, interface scale, and
+  wrap are implemented; theme, language, and device remain session-only.
 - Expose a reviewable pending transcript when the document changes while the
   user is speaking.
 
@@ -65,8 +65,8 @@ rather than capture an entire desktop or change a user's global audio default.
   OAuth client/originator registration, PKCE, secure credential storage, token
   refresh, model discovery, Codex request-dialect adaptation, typed errors, and
   cancellation. Keep app-server as a fallback until parity tests pass.
-- Query `model/list` and select only capabilities actually advertised by the
-  installed Codex CLI; expose latency/quality choice without hardcoded slugs.
+- Extend the implemented `model/list` selector with advertised reasoning effort
+  and service-tier choices, without hardcoded slugs.
 - Add cancellation with `turn/interrupt`; the request queue is already bounded,
   but an active turn cannot yet be interrupted.
 - Restart app-server with jittered backoff and distinguish auth, network, rate
@@ -104,7 +104,7 @@ rather than capture an entire desktop or change a user's global audio default.
   `PIPEWIRE_NODE` and `PULSE_SOURCE`; never change the global default input.
 - Test native audio and dialogs on Linux/Wayland, Linux/X11, macOS, and Windows.
 - Bundle and license Atkinson Hyperlegible Next Regular/Semibold/Bold plus
-  Libertinus Sans before enforcing all six pixel snapshots across platforms;
+  Libertinus Sans before enforcing all seven pixel snapshots across platforms;
   pin a monospace font in visual-test environments while preserving the user's
   generic monospace preference at runtime. Named families may still fall back.
 - Add GPU-specific build profiles and runtime diagnostics.

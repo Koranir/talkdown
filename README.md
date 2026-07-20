@@ -4,8 +4,10 @@ Talkdown is a modal, voice-first text editor built with `iced`. Normal mode is
 read-only: printable keys are commands, not text. Hold a key, speak, and the
 live local hypothesis updates in the voice panel. On release, the final raw
 transcript lands at the captured cursor as soon as local finalization completes;
-a subscription-authenticated Codex process then applies a narrowly validated,
-context-aware refinement.
+the default Harper checker then applies only conservative local grammar fixes.
+Contextual commands—and optional richer dictation refinement—use a
+subscription-authenticated Codex process behind the existing exact-target
+validator.
 
 This repository is an early but runnable vertical slice. It already provides:
 
@@ -14,17 +16,21 @@ This repository is an early but runnable vertical slice. It already provides:
 - Normal, Insert, and typed-command modes;
 - push-to-talk local Whisper transcription with a separate latest-wins partial
   decoder, so microphone capture and release handling never wait on inference;
-- optimistic literal insertion, followed by a one-undo-step Codex refinement;
+- optimistic literal insertion, followed by a one-undo-step local Harper check
+  by default, with an in-memory applied/ignored lint audit and Codex refinement
+  available as a setting;
 - cursor/selection-aware contextual commands;
 - a persistent `codex app-server` client that uses ChatGPT subscription auth;
 - exact-target validation, stale-response handling, and bounded context;
 - a custom charcoal-and-magenta `Talkdown Carbon` theme with explicit modal,
-  Speech, Codex, and text-safety states instead of ambiguous status strings;
+  Speech, Codex, Checker, and text-safety states instead of ambiguous status
+  strings;
 - Atkinson Hyperlegible Next UI chrome with complementary Libertinus prose and
   editor faces, a consistent three-size scale, 80–200% editor-text zoom, and
   80–140% application scaling;
-- a staged Settings modal for editor text, interface scale, word wrap, and the
-  local transcription model, including a verified default-model download;
+- a staged Settings modal for appearance, dictation-checking provider, the
+  advertised Codex model, and the local transcription model, including a
+  verified default-model download;
 - open, save, save-as, syntax highlighting, wrapping, undo, and redo.
 
 ## Prerequisites
@@ -160,10 +166,10 @@ help on hover.
 
 Settings replaces the toolbar's separate wrap control. It stages editor-text
 zoom, complete interface scale, word wrap, and the local transcription model
-without disturbing the editor underneath. Apply commits them together, while
-Cancel or Escape discards the staged selection. The selected model path is
-persisted; presentation preferences currently last for the application session
-only. While open, plain `+`/`-` changes staged editor text, Ctrl/Cmd `+`/`-`
+without disturbing the editor underneath. Apply commits and persists them
+together, while Cancel or Escape discards the staged selection. The model path,
+checking provider, Codex model, both zoom scopes, and word wrap are restored on
+the next launch. While open, plain `+`/`-` changes staged editor text, Ctrl/Cmd `+`/`-`
 changes staged UI scale, `W` toggles staged word wrap, and Enter applies.
 Choosing a model does not interrupt the speech worker until Apply. The default
 download reports byte progress, can be cancelled, verifies its pinned size and
@@ -228,8 +234,8 @@ cargo test --no-default-features \
   app::tests::intercepted_voice_edit_is_contextual_and_one_undo_step -- --exact
 ```
 
-The current default-feature build discovers 59 tests: 48 run normally and eleven
-are ignored. (`--no-default-features` discovers 52: 44 normal and eight
+The current default-feature build discovers 72 tests: 60 run normally and twelve
+are ignored. (`--no-default-features` discovers 65: 56 normal and nine
 ignored.) The ignored tests cover external state, real inference, or visual
 baselines:
 
@@ -268,9 +274,11 @@ microphone without recording an utterance. The fourth requires `espeak-ng`: it
 writes speech to a seekable temporary WAV, injects decoded PCM just below CPAL,
 runs real local Whisper, verifies the genuine request emitted by the app, and
 uses a manually completed intercepted Codex turn. The snapshot command runs
-six ignored iced tests. The ready/success fixture compares
+seven ignored iced tests. The ready/success fixture compares
 `tests/snapshots/main-window-tiny-skia.png`; the hovered mode-help fixture
-compares `tests/snapshots/contextual-help-window-tiny-skia.png`; the staged
+compares `tests/snapshots/contextual-help-window-tiny-skia.png`; the hovered
+applied/ignored checker-audit fixture compares
+`tests/snapshots/checker-audit-window-tiny-skia.png`; the staged
 Settings fixture compares `tests/snapshots/settings-window-tiny-skia.png`; the Codex
 failure fixture proves its raw transcript is visible and compares
 `tests/snapshots/failure-window-tiny-skia.png`; the model-download failure
@@ -278,7 +286,7 @@ fixture compares `tests/snapshots/model-download-window-tiny-skia.png`; and the 
 compares `tests/snapshots/minimum-window-tiny-skia.png` at the maximum 140%
 scale state while hovering the offline Speech pill over its still-visible error
 notice. It also asserts that critical controls are visible, the voice title and
-service chips align, and footer cursor metadata is centered. All six render
+service chips align, and footer cursor metadata is centered. All seven render
 only Talkdown's offscreen tiny-skia buffer and never capture the desktop. They
 resolve the unbundled Atkinson Hyperlegible Next and Libertinus Sans families
 plus the generic monospace choice through the host, so their pixels are not yet
