@@ -77,8 +77,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 84 tests: 71 normal and thirteen
-  ignored. The no-default-feature build discovers 77: 67 normal and ten
+- The default-feature build currently discovers 85 tests: 72 normal and thirteen
+  ignored. The no-default-feature build discovers 78: 68 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo test` passes with the default feature and with
   `--no-default-features`.
@@ -129,6 +129,11 @@ Optimize in this order:
 - `TextEditor::key_binding` is not the security boundary. IME commits and
   delayed clipboard paste can bypass it. `Document::perform` must continue to
   reject every `action.is_edit()` unless mode is Insert.
+- In Normal mode, the physical Insert key enters Insert mode without changing
+  text. The physical Delete and Backspace keys delete the current selection or
+  the forward/previous character through `Document`, then enter Insert mode.
+  Keep these bindings distinct from the Vim-style `x` command, which remains in
+  Normal mode.
 - AI changes must use the separate trusted replacement path, never spoof
   untrusted editor actions.
 - iced cursor columns and Talkdown offsets are UTF-8 byte positions. Do not

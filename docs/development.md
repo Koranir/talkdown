@@ -227,8 +227,8 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 84 tests: 71 run and thirteen are
-ignored. The no-default-feature build discovers 77: 67 run and ten are
+The default-feature build currently discovers 85 tests: 72 run and thirteen are
+ignored. The no-default-feature build discovers 78: 68 run and ten are
 ignored. The README lists all thirteen ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a

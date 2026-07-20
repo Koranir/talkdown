@@ -61,6 +61,12 @@ The second check is essential. Current iced routes IME commits and the result of
 an asynchronous clipboard read directly as `Action::Edit`, bypassing the key
 binding closure.
 
+Normal-mode physical Insert maps to the trusted mode transition without a text
+mutation. Physical Delete and Backspace first use `Document::delete_forward`
+or `Document::delete_backward` for the current selection or adjacent character,
+then enter Insert mode. The Vim-style `x` command remains a Normal-mode deletion
+rather than sharing this transition.
+
 Pinned iced exposes neither a text-editor caret style nor blink control.
 Talkdown therefore keeps the Normal-mode caret steady by refreshing iced's
 focus/blink epoch every 250 ms. One custom `advanced` widget operation traverses

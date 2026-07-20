@@ -230,6 +230,13 @@ impl Document {
         self.perform(text_editor::Action::Edit(text_editor::Edit::Delete), true)
     }
 
+    pub fn delete_backward(&mut self) -> bool {
+        self.perform(
+            text_editor::Action::Edit(text_editor::Edit::Backspace),
+            true,
+        )
+    }
+
     pub fn insert(&mut self, text: &str) -> Result<(), ReplaceError> {
         let snapshot = self.snapshot();
         self.replace(snapshot.target_range(), text)

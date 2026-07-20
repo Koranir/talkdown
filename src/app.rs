@@ -552,6 +552,8 @@ enum Message {
     OpenLineAbove,
     OpenLineBelow,
     DeleteForward,
+    DeleteForwardAndEnterInsert,
+    DeleteBackwardAndEnterInsert,
     Undo,
     Redo,
     NewFile,
@@ -1021,6 +1023,18 @@ impl App {
                     ));
                 }
                 Task::none()
+            }
+            Message::DeleteForwardAndEnterInsert => {
+                let _ = self.document.delete_forward();
+                self.mode = Mode::Insert;
+                self.set_transient_notice(self.default_notice());
+                operation::focus(EDITOR_ID)
+            }
+            Message::DeleteBackwardAndEnterInsert => {
+                let _ = self.document.delete_backward();
+                self.mode = Mode::Insert;
+                self.set_transient_notice(self.default_notice());
+                operation::focus(EDITOR_ID)
             }
             Message::Undo => {
                 if self.document.undo() {
@@ -4357,6 +4371,23 @@ fn editor_binding(
         return None;
     }
 
+    match key_press.key.as_ref() {
+        keyboard::Key::Named(key::Named::Insert) => {
+            return Some(text_editor::Binding::Custom(Message::EnterInsert));
+        }
+        keyboard::Key::Named(key::Named::Delete) => {
+            return Some(text_editor::Binding::Custom(
+                Message::DeleteForwardAndEnterInsert,
+            ));
+        }
+        keyboard::Key::Named(key::Named::Backspace) => {
+            return Some(text_editor::Binding::Custom(
+                Message::DeleteBackwardAndEnterInsert,
+            ));
+        }
+        _ => {}
+    }
+
     if matches!(
         key_press.key.as_ref(),
         keyboard::Key::Named(key::Named::Space)
@@ -4794,6 +4825,14 @@ mod tests {
                     let _ = self.document.insert("\n");
                     self.document
                         .perform(text_editor::Action::Move(text_editor::Motion::Left), false);
+                    self.mode = Mode::Insert;
+                }
+                Message::DeleteForwardAndEnterInsert => {
+                    let _ = self.document.delete_forward();
+                    self.mode = Mode::Insert;
+                }
+                Message::DeleteBackwardAndEnterInsert => {
+                    let _ = self.document.delete_backward();
                     self.mode = Mode::Insert;
                 }
                 Message::GlobalEscape => self.mode = Mode::Normal,
@@ -6614,6 +6653,32 @@ mod tests {
 
         editor.document.insert("new").expect("insert on blank line");
         assert_eq!(editor.document.text(), "new\nexisting");
+    }
+
+    #[test]
+    fn iced_insert_delete_and_backspace_keys_enter_insert_mode() {
+        let mut editor = ModalHarness::new("abcd");
+        editor.simulate(|ui| {
+            assert_eq!(ui.tap_key(key::Named::Home), event::Status::Captured);
+            assert_eq!(ui.tap_key(key::Named::Delete), event::Status::Captured);
+        });
+        assert_eq!(editor.document.text(), "bcd");
+        assert_eq!(editor.mode, Mode::Insert);
+
+        editor.apply(Message::GlobalEscape);
+        editor.simulate(|ui| {
+            assert_eq!(ui.tap_key(key::Named::Insert), event::Status::Captured);
+        });
+        assert_eq!(editor.document.text(), "bcd");
+        assert_eq!(editor.mode, Mode::Insert);
+
+        editor.apply(Message::GlobalEscape);
+        editor.simulate(|ui| {
+            assert_eq!(ui.tap_key(key::Named::End), event::Status::Captured);
+            assert_eq!(ui.tap_key(key::Named::Backspace), event::Status::Captured);
+        });
+        assert_eq!(editor.document.text(), "bc");
+        assert_eq!(editor.mode, Mode::Insert);
     }
 
     #[test]

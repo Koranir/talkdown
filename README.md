@@ -120,6 +120,9 @@ Normal mode is the default.
 | `g` / `G` | Start / end of document |
 | `u` | Undo |
 | `x` | Delete selection or next character |
+| `Insert` | Enter Insert mode at the current cursor |
+| `Delete` | Delete the selection or next character, then enter Insert mode |
+| `Backspace` | Delete the selection or previous character, then enter Insert mode |
 | `+` / `=` | Increase editor text size by 10% |
 | `-` | Decrease editor text size by 10% |
 | `Ctrl/Cmd-+` / `Ctrl/Cmd-=` | Increase complete UI scale by 10% |
@@ -236,8 +239,8 @@ cargo test --no-default-features \
   app::tests::intercepted_voice_edit_is_contextual_and_one_undo_step -- --exact
 ```
 
-The current default-feature build discovers 84 tests: 71 run normally and thirteen
-are ignored. (`--no-default-features` discovers 77: 67 normal and ten
+The current default-feature build discovers 85 tests: 72 run normally and thirteen
+are ignored. (`--no-default-features` discovers 78: 68 normal and ten
 ignored.) The ignored tests cover external state, real inference, or visual
 baselines:
 
