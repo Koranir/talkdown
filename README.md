@@ -32,7 +32,8 @@ This repository is an early but runnable vertical slice. It already provides:
 - a staged Settings modal for appearance, dictation-checking provider, the
   advertised Codex model, and the local transcription model, including a
   verified default-model download;
-- open, save, save-as, syntax highlighting, wrapping, undo, and redo.
+- open, save, save-as, syntax highlighting, wrapping, undo, redo, and explicit
+  discard confirmation for dirty New/Open/close actions.
 
 ## Prerequisites
 
@@ -235,8 +236,8 @@ cargo test --no-default-features \
   app::tests::intercepted_voice_edit_is_contextual_and_one_undo_step -- --exact
 ```
 
-The current default-feature build discovers 80 tests: 68 run normally and twelve
-are ignored. (`--no-default-features` discovers 73: 64 normal and nine
+The current default-feature build discovers 84 tests: 71 run normally and thirteen
+are ignored. (`--no-default-features` discovers 77: 67 normal and ten
 ignored.) The ignored tests cover external state, real inference, or visual
 baselines:
 
@@ -275,19 +276,21 @@ microphone without recording an utterance. The fourth requires `espeak-ng`: it
 writes speech to a seekable temporary WAV, injects decoded PCM just below CPAL,
 runs real local Whisper, verifies the genuine request emitted by the app, and
 uses a manually completed intercepted Codex turn. The snapshot command runs
-seven ignored iced tests. The ready/success fixture compares
+eight ignored iced tests. The ready/success fixture compares
 `tests/snapshots/main-window-tiny-skia.png`; the hovered mode-help fixture
 compares `tests/snapshots/contextual-help-window-tiny-skia.png`; the hovered
 applied/ignored checker-audit fixture compares
 `tests/snapshots/checker-audit-window-tiny-skia.png`; the staged
-Settings fixture compares `tests/snapshots/settings-window-tiny-skia.png`; the Codex
+Settings fixture compares `tests/snapshots/settings-window-tiny-skia.png`; the
+discard-confirmation fixture compares
+`tests/snapshots/discard-changes-window-tiny-skia.png`; the Codex
 failure fixture proves its raw transcript is visible and compares
 `tests/snapshots/failure-window-tiny-skia.png`; the model-download failure
 fixture compares `tests/snapshots/model-download-window-tiny-skia.png`; and the 940 × 640 fixture
 compares `tests/snapshots/minimum-window-tiny-skia.png` at the maximum 140%
 scale state while hovering the offline Speech pill over its still-visible error
 notice. It also asserts that critical controls are visible, the voice title and
-service chips align, and footer cursor metadata is centered. All seven render
+service chips align, and footer cursor metadata is centered. All eight render
 only Talkdown's offscreen tiny-skia buffer and never capture the desktop. They
 resolve the unbundled Atkinson Hyperlegible Next and Libertinus Sans families
 plus the generic monospace choice through the host, so their pixels are not yet

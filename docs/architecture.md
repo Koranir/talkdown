@@ -41,6 +41,14 @@ saved text, and revision back to the UI; if newer edits occurred in the same
 buffer, the disk baseline updates without falsely marking it clean. A result
 from a prior generation can never rename, mark, or replace the current buffer.
 
+New, Open, and native close requests route dirty documents through
+`discard_action: Option<DiscardAction>`. Its opaque modal blocks background
+editor commands and offers only Keep editing or an explicitly danger-styled
+discard action; Escape is equivalent to Keep editing. Confirming Open does not
+clear the buffer before showing the picker. Replacement happens only after a
+file is selected and read successfully, so picker cancellation and open errors
+preserve all unsaved text.
+
 ## Modal boundary
 
 The text editor always has an action callback so mouse selection, scrolling, and
@@ -277,7 +285,7 @@ Talkdown tests progressively replace only the slow or machine-dependent edge:
   transcribes the audio and the app creates a genuine `CodexRequest`. An
   intercepted driver then supplies a deterministic manual completion, so the
   test never consumes a Codex turn.
-- Seven ignored visual regressions construct complete `App::view()` fixtures in
+- Eight ignored visual regressions construct complete `App::view()` fixtures in
   `iced_test::Simulator` and render them with tiny-skia into offscreen buffers.
   The ready/success fixture compares
   `tests/snapshots/main-window-tiny-skia.png`; the contextual-help fixture hovers
@@ -285,7 +293,8 @@ Talkdown tests progressively replace only the slow or machine-dependent edge:
   `tests/snapshots/contextual-help-window-tiny-skia.png`; the checker-audit
   fixture hovers a completed Checker pill and compares
   `tests/snapshots/checker-audit-window-tiny-skia.png`; the settings fixture
-  compares `tests/snapshots/settings-window-tiny-skia.png`; the model-download
+  compares `tests/snapshots/settings-window-tiny-skia.png`; the discard dialog
+  compares `tests/snapshots/discard-changes-window-tiny-skia.png`; the model-download
   failure fixture compares `tests/snapshots/model-download-window-tiny-skia.png`;
   the Codex-failure
   fixture keeps its raw transcript visible and compares
@@ -298,7 +307,7 @@ Talkdown tests progressively replace only the slow or machine-dependent edge:
   The main, contextual-help, and failure fixtures use 100%; all fixtures use the
   host-resolved Atkinson Hyperlegible Next and Libertinus Sans families plus the
   generic monospace choice, so they are host-specific. None takes a whole-desktop
-  screenshot. The shared test filter is `window_snapshot` and runs all seven.
+  screenshot. The shared test filter is `window_snapshot` and runs all eight.
 
 An ignored PipeWire test exercises the remaining CPAL device-selection seam
 through the optional helper. The helper creates a temporary source and launches
@@ -407,5 +416,8 @@ visible even when another subsystem owns that notice.
   current cursor.
 - Save completes after a newer edit: disk baseline is recorded, newer edit
   remains visibly dirty.
+- New, Open, or window close with unsaved edits: the document remains intact
+  until the user explicitly confirms discard. A cancelled or failed Open keeps
+  it intact even after confirmation.
 - A New/Open operation invalidates speech and semantic work from the previous
   buffer generation; stale completions are ignored.

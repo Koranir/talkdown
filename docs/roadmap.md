@@ -21,8 +21,8 @@ rather than capture an entire desktop or change a user's global audio default.
   discovery, verified `.part` downloads, atomic completion, cancellation, and
   custom-model selection are implemented.
 - Add microphone/device selection and reconnect behavior.
-- Add unsaved-change confirmation for New/Open/close instead of the current
-  “save first” guard.
+- Unsaved-change confirmation for New/Open/close is implemented; Open retains
+  the dirty buffer until a replacement file is successfully read.
 - Turn notice recovery instructions into contextual actions where safe (for
   example Retry Save or Save As) without weakening the rule that a failure
   names both the text-safety outcome and the next step.
@@ -104,7 +104,7 @@ rather than capture an entire desktop or change a user's global audio default.
   `PIPEWIRE_NODE` and `PULSE_SOURCE`; never change the global default input.
 - Test native audio and dialogs on Linux/Wayland, Linux/X11, macOS, and Windows.
 - Bundle and license Atkinson Hyperlegible Next Regular/Semibold/Bold plus
-  Libertinus Sans before enforcing all seven pixel snapshots across platforms;
+  Libertinus Sans before enforcing all eight pixel snapshots across platforms;
   pin a monospace font in visual-test environments while preserving the user's
   generic monospace preference at runtime. Named families may still fall back.
 - Add GPU-specific build profiles and runtime diagnostics.

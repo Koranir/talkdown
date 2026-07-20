@@ -59,13 +59,14 @@ Optimize in this order:
   utterance as one undo step without starting either external worker.
 - An ignored eSpeak test writes a seekable WAV, injects PCM below CPAL, runs
   real local Whisper, inspects the app's genuine request, and manually
-  completes an intercepted Codex response. Seven ignored tiny-skia tests render
+  completes an intercepted Codex response. Eight ignored tiny-skia tests render
   complete ready/success, hovered Normal-mode help, settings-modal,
-  model-download failure, Codex-failure, and minimum-window/offline-Speech-help views offscreen
+  unsaved-discard confirmation, model-download failure, Codex-failure, and minimum-window/offline-Speech-help views offscreen
   against `tests/snapshots/main-window-tiny-skia.png`,
   `tests/snapshots/contextual-help-window-tiny-skia.png`,
   `tests/snapshots/checker-audit-window-tiny-skia.png`,
   `tests/snapshots/settings-window-tiny-skia.png`,
+  `tests/snapshots/discard-changes-window-tiny-skia.png`,
   `tests/snapshots/model-download-window-tiny-skia.png`,
   `tests/snapshots/failure-window-tiny-skia.png`, and
   `tests/snapshots/minimum-window-tiny-skia.png`. The minimum-window test uses
@@ -76,8 +77,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 80 tests: 68 normal and twelve
-  ignored. The no-default-feature build discovers 73: 64 normal and nine
+- The default-feature build currently discovers 84 tests: 71 normal and thirteen
+  ignored. The no-default-feature build discovers 77: 67 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo test` passes with the default feature and with
   `--no-default-features`.
@@ -138,6 +139,12 @@ Optimize in this order:
 - Every buffer replacement advances `App::buffer_generation`. File tasks and
   pending semantic edits must carry that generation so results from one file
   can never affect another.
+- New, Open, and native window-close requests must never silently discard a
+  dirty buffer. Keep the opaque confirmation layer, make Escape/Keep editing
+  non-destructive, and require the explicit danger-styled discard action.
+  Confirming Open authorizes replacement but must retain the dirty buffer until
+  another file opens successfully, so a cancelled or failed picker loses no
+  text.
 - Pinned iced exposes no text-editor caret style or blink-control API. Talkdown
   keeps the focused Normal-mode caret steady every 250 ms with one custom
   `advanced` widget operation that refreshes the editor's focus/blink epoch only
@@ -323,19 +330,21 @@ Optimize in this order:
 - Full-window visual regression uses `iced_test::Simulator` with
   `ICED_TEST_BACKEND=tiny-skia`. It snapshots only Talkdown's offscreen renderer
   buffer, never the whole desktop. The ready/success, hovered Normal-mode help,
-  checker-audit tooltip, staged settings modal, model-download failure,
+  checker-audit tooltip, staged settings modal, unsaved-discard confirmation,
+  model-download failure,
   preserved-transcript failure, and 940 × 640 offline-Speech-help geometry
   baselines are
   `tests/snapshots/main-window-tiny-skia.png`,
   `tests/snapshots/contextual-help-window-tiny-skia.png`,
   `tests/snapshots/checker-audit-window-tiny-skia.png`,
   `tests/snapshots/settings-window-tiny-skia.png`,
+  `tests/snapshots/discard-changes-window-tiny-skia.png`,
   `tests/snapshots/model-download-window-tiny-skia.png`,
   `tests/snapshots/failure-window-tiny-skia.png`, and
   `tests/snapshots/minimum-window-tiny-skia.png`. The minimum fixture also
   checks visibility and alignment in the widget tree at the maximum 140% scale
   state while hovering the offline Speech pill over its visible error notice.
-  The shared command filters on `window_snapshot` so all seven run together. The
+  The shared command filters on `window_snapshot` so all eight run together. The
   main, contextual-help, and failure fixtures use 100%; all fixtures use the
   system-resolved Atkinson Hyperlegible Next and Libertinus Sans families plus
   the generic monospace choice, so their bytes are host-dependent.

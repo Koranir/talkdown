@@ -45,6 +45,9 @@ const SETTINGS_MODEL_CHOOSE_ID: &str = "talkdown-settings-model-choose";
 const SETTINGS_MODEL_DEFAULT_ID: &str = "talkdown-settings-model-default";
 const SETTINGS_CANCEL_ID: &str = "talkdown-settings-cancel";
 const SETTINGS_APPLY_ID: &str = "talkdown-settings-apply";
+const DISCARD_MODAL_ID: &str = "talkdown-discard-modal";
+const DISCARD_KEEP_ID: &str = "talkdown-discard-keep";
+const DISCARD_CONFIRM_ID: &str = "talkdown-discard-confirm";
 const WINDOW_SIZE: (f32, f32) = (1_180.0, 780.0);
 const MIN_WINDOW_SIZE: (f32, f32) = (940.0, 640.0);
 const DEFAULT_TEXT_SCALE_PERCENT: u16 = model::DEFAULT_TEXT_SCALE_PERCENT;
@@ -244,6 +247,27 @@ mod ui {
         }
     }
 
+    pub fn danger_button(_: &Theme, status: button::Status) -> button::Style {
+        let (background, text_color, border_color) = match status {
+            button::Status::Active => (DANGER_SURFACE, DANGER, DANGER.scale_alpha(0.72)),
+            button::Status::Hovered => (DANGER.scale_alpha(0.18), TEXT, DANGER),
+            button::Status::Pressed => (DANGER.scale_alpha(0.1), DANGER, DANGER),
+            button::Status::Disabled => (SURFACE, DISABLED, BORDER),
+        };
+
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color,
+            border: Border::default().rounded(6).width(1).color(border_color),
+            shadow: Shadow {
+                color: DANGER.scale_alpha(0.08),
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: 8.0,
+            },
+            ..button::Style::default()
+        }
+    }
+
     pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
         let mut style = text_editor::default(theme, status);
         style.background = Background::Color(EDITOR);
@@ -433,6 +457,7 @@ pub fn run() -> iced::Result {
         .window(window::Settings {
             size: WINDOW_SIZE.into(),
             min_size: Some(MIN_WINDOW_SIZE.into()),
+            exit_on_close_request: false,
             ..window::Settings::default()
         })
         .run()
@@ -539,6 +564,9 @@ enum Message {
     SaveFile,
     SaveFileAs,
     FileSaved(Result<SavedFile, FileError>),
+    WindowCloseRequested(window::Id),
+    ConfirmDiscard,
+    CancelDiscard,
     AdjustTextScale(i16),
     AdjustUiScale(i16),
     OpenSettings,
@@ -586,6 +614,31 @@ struct PendingEdit {
     amend_optimistic_insert: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscardAction {
+    NewFile,
+    OpenFile,
+    CloseWindow(window::Id),
+}
+
+impl DiscardAction {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::NewFile => "create a new buffer",
+            Self::OpenFile => "open another file",
+            Self::CloseWindow(_) => "close Talkdown",
+        }
+    }
+
+    fn button_label(self) -> &'static str {
+        match self {
+            Self::NewFile => "Discard & new",
+            Self::OpenFile => "Discard & open",
+            Self::CloseWindow(_) => "Discard & close",
+        }
+    }
+}
+
 struct App {
     file: Option<PathBuf>,
     document: Document,
@@ -604,6 +657,7 @@ struct App {
     codex_model: Option<String>,
     codex_models: Vec<CodexModel>,
     settings: Option<SettingsDraft>,
+    discard_action: Option<DiscardAction>,
     model_picker_open: bool,
     model_download: Option<ModelDownloadState>,
     model_download_error: Option<String>,
@@ -714,6 +768,7 @@ impl App {
             codex_model: None,
             codex_models: Vec::new(),
             settings: None,
+            discard_action: None,
             model_picker_open: false,
             model_download: None,
             model_download_error: None,
@@ -875,7 +930,10 @@ impl App {
     }
 
     fn should_keep_normal_cursor_visible(&self) -> bool {
-        self.mode == Mode::Normal && self.window_focused && self.settings.is_none()
+        self.mode == Mode::Normal
+            && self.window_focused
+            && self.settings.is_none()
+            && self.discard_action.is_none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -887,6 +945,20 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if self.discard_action.is_some()
+            && !matches!(
+                &message,
+                Message::ConfirmDiscard
+                    | Message::CancelDiscard
+                    | Message::GlobalEscape
+                    | Message::RefreshNormalCursor
+                    | Message::WindowFocusChanged(_)
+                    | Message::Tick
+            )
+        {
+            return Task::none();
+        }
+
         if self.settings.is_some()
             && !matches!(
                 &message,
@@ -902,6 +974,7 @@ impl App {
                     | Message::SettingsCancelModelDownload
                     | Message::ApplySettings
                     | Message::CancelSettings
+                    | Message::WindowCloseRequested(_)
                     | Message::GlobalEscape
                     | Message::RefreshNormalCursor
                     | Message::WindowFocusChanged(_)
@@ -971,30 +1044,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::NewFile => {
-                if self.document.is_dirty() {
-                    self.set_notice(
-                        Notice::new(
-                            NoticeSource::File,
-                            UiState::Warning,
-                            "New file blocked by unsaved edits",
-                            "The current buffer was left unchanged.",
-                        )
-                        .recovery("Save or undo the current edits, then try New again."),
-                    );
-                } else {
-                    self.file = None;
-                    self.replace_document("");
-                    self.mode = Mode::Normal;
-                    self.set_notice(Notice::new(
-                        NoticeSource::File,
-                        UiState::Success,
-                        "New buffer ready",
-                        "Start dictating or enter Insert mode to type.",
-                    ));
-                }
-                operation::focus(EDITOR_ID)
-            }
+            Message::NewFile => self.request_new_file(),
             Message::OpenFile => self.open_file(),
             Message::FileOpened {
                 requested_generation,
@@ -1098,6 +1148,29 @@ impl App {
                     ),
                 }
                 Task::none()
+            }
+            Message::WindowCloseRequested(window) => {
+                self.settings = None;
+                if self.document.is_dirty() {
+                    self.discard_action = Some(DiscardAction::CloseWindow(window));
+                    Task::none()
+                } else {
+                    window::close(window)
+                }
+            }
+            Message::ConfirmDiscard => self.confirm_discard(),
+            Message::CancelDiscard => {
+                if self.discard_action.take().is_some() {
+                    self.set_transient_notice(Notice::new(
+                        NoticeSource::File,
+                        UiState::Info,
+                        "Unsaved changes kept",
+                        "The current document remains open and unchanged.",
+                    ));
+                    operation::focus(EDITOR_ID)
+                } else {
+                    Task::none()
+                }
             }
             Message::AdjustTextScale(delta) => {
                 let previous = self.text_scale_percent;
@@ -1495,7 +1568,7 @@ impl App {
             row![
                 mode_indicator,
                 column![
-                    text(document_name)
+                    text(document_name.clone())
                         .font(UI_BOLD_FONT)
                         .size(LEAD_SIZE)
                         .color(ui::TEXT)
@@ -1892,7 +1965,9 @@ impl App {
             .padding(12)
             .into();
 
-        if let Some(settings) = self.settings.as_ref() {
+        if let Some(action) = self.discard_action {
+            stack([workspace, discard_changes_modal(action, document_name)]).into()
+        } else if let Some(settings) = self.settings.as_ref() {
             #[cfg(not(test))]
             let default_path = model::default_model_path().ok();
             #[cfg(test)]
@@ -2008,6 +2083,16 @@ impl App {
     }
 
     fn escape(&mut self) -> Task<Message> {
+        if self.discard_action.take().is_some() {
+            self.set_transient_notice(Notice::new(
+                NoticeSource::File,
+                UiState::Info,
+                "Unsaved changes kept",
+                "The current document remains open and unchanged.",
+            ));
+            return operation::focus(EDITOR_ID);
+        }
+
         if self.settings.take().is_some() {
             return operation::focus(EDITOR_ID);
         }
@@ -3081,6 +3166,40 @@ impl App {
         }
     }
 
+    fn request_new_file(&mut self) -> Task<Message> {
+        if self.document.is_dirty() {
+            self.discard_action = Some(DiscardAction::NewFile);
+            Task::none()
+        } else {
+            self.new_file()
+        }
+    }
+
+    fn new_file(&mut self) -> Task<Message> {
+        self.file = None;
+        self.replace_document("");
+        self.mode = Mode::Normal;
+        self.set_notice(Notice::new(
+            NoticeSource::File,
+            UiState::Success,
+            "New buffer ready",
+            "Start dictating or enter Insert mode to type.",
+        ));
+        operation::focus(EDITOR_ID)
+    }
+
+    fn confirm_discard(&mut self) -> Task<Message> {
+        let Some(action) = self.discard_action.take() else {
+            return Task::none();
+        };
+
+        match action {
+            DiscardAction::NewFile => self.new_file(),
+            DiscardAction::OpenFile => self.begin_open_file(),
+            DiscardAction::CloseWindow(window) => window::close(window),
+        }
+    }
+
     fn open_file(&mut self) -> Task<Message> {
         if self.file_busy {
             self.set_transient_notice(Notice::new(
@@ -3092,17 +3211,15 @@ impl App {
             return Task::none();
         }
         if self.document.is_dirty() {
-            self.set_notice(
-                Notice::new(
-                    NoticeSource::File,
-                    UiState::Warning,
-                    "Open blocked by unsaved edits",
-                    "The current buffer was left unchanged.",
-                )
-                .recovery("Save or undo the current edits, then try Open again."),
-            );
+            self.discard_action = Some(DiscardAction::OpenFile);
             return Task::none();
         }
+
+        self.begin_open_file()
+    }
+
+    fn begin_open_file(&mut self) -> Task<Message> {
+        debug_assert!(!self.file_busy);
 
         self.file_busy = true;
         self.set_notice(Notice::new(
@@ -3602,6 +3719,102 @@ fn settings_scale_controls(control: SettingsScaleControl) -> Element<'static, Me
     .spacing(6)
     .align_x(Right)
     .into()
+}
+
+fn discard_changes_modal(
+    action: DiscardAction,
+    document_name: String,
+) -> Element<'static, Message> {
+    let consequence = match action {
+        DiscardAction::OpenFile => {
+            "Your current buffer stays intact if the picker is cancelled or the selected file cannot be opened."
+        }
+        DiscardAction::NewFile | DiscardAction::CloseWindow(_) => {
+            "This cannot be undone after you continue."
+        }
+    };
+    let keep = container(
+        button(fixed_button_label("Keep editing", UI_FONT, BODY_SIZE))
+            .width(124)
+            .height(36)
+            .padding([7, 14])
+            .style(ui::quiet_button)
+            .on_press(Message::CancelDiscard),
+    )
+    .id(DISCARD_KEEP_ID);
+    let discard = container(
+        button(fixed_button_label(
+            action.button_label(),
+            UI_FONT,
+            BODY_SIZE,
+        ))
+        .width(144)
+        .height(36)
+        .padding([7, 14])
+        .style(ui::danger_button)
+        .on_press(Message::ConfirmDiscard),
+    )
+    .id(DISCARD_CONFIRM_ID);
+
+    let modal = container(
+        column![
+            row![
+                column![
+                    text("Discard unsaved changes?")
+                        .font(UI_BOLD_FONT)
+                        .size(LEAD_SIZE)
+                        .color(ui::TEXT),
+                    text(document_name)
+                        .font(UI_FONT)
+                        .size(BODY_SIZE)
+                        .color(ui::SUBTLE),
+                ]
+                .spacing(2)
+                .width(Fill),
+                container(
+                    text("UNSAVED")
+                        .font(EDITOR_FONT)
+                        .size(CAPTION_SIZE)
+                        .color(ui::WARNING),
+                )
+                .padding([5, 8])
+                .style(|_| ui::status_pill(ui::WARNING)),
+            ]
+            .align_y(Center),
+            container(space()).width(Fill).height(1).style(ui::rule),
+            text(format!(
+                "If you {}, changes that have not been saved will be discarded.",
+                action.verb()
+            ))
+            .font(UI_FONT)
+            .size(BODY_SIZE)
+            .line_height(1.35)
+            .color(ui::SECONDARY),
+            text(consequence)
+                .font(UI_FONT)
+                .size(BODY_SIZE)
+                .line_height(1.35)
+                .color(ui::DANGER),
+            row![space().width(Fill), keep, discard]
+                .spacing(8)
+                .align_y(Center),
+        ]
+        .spacing(14),
+    )
+    .id(DISCARD_MODAL_ID)
+    .width(540)
+    .padding(20)
+    .style(ui::modal_card);
+
+    opaque(
+        container(modal)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Center)
+            .align_y(Center)
+            .padding(24)
+            .style(ui::modal_backdrop),
+    )
 }
 
 fn settings_modal(
@@ -4209,8 +4422,9 @@ fn editor_binding(
     }
 }
 
-fn global_event(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+fn global_event(event: Event, _status: event::Status, window: window::Id) -> Option<Message> {
     match event {
+        Event::Window(window::Event::CloseRequested) => Some(Message::WindowCloseRequested(window)),
         Event::Window(window::Event::Focused) => Some(Message::WindowFocusChanged(true)),
         Event::Window(window::Event::Unfocused) => Some(Message::WindowFocusChanged(false)),
         Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => match key.as_ref() {
@@ -5067,6 +5281,107 @@ mod tests {
     }
 
     #[test]
+    fn unsaved_changes_can_be_kept_or_discarded_for_file_actions() {
+        let (mut app, _speech, _codex) = test_app("Saved text");
+        app.document.insert(" plus edits").expect("dirty fixture");
+        let dirty_text = app.document.text();
+
+        let _ = app.update(Message::NewFile);
+        assert_eq!(app.discard_action, Some(DiscardAction::NewFile));
+        assert_eq!(app.document.text(), dirty_text);
+
+        // The confirmation layer is modal: background editor commands do not
+        // mutate the buffer while the destructive decision is pending.
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.document.text(), dirty_text);
+        let _ = app.update(Message::CancelDiscard);
+        assert!(app.discard_action.is_none());
+        assert_eq!(app.document.text(), dirty_text);
+        assert!(app.document.is_dirty());
+
+        let _ = app.update(Message::NewFile);
+        let _ = app.update(Message::ConfirmDiscard);
+        assert!(app.discard_action.is_none());
+        assert_eq!(app.document.text(), "");
+        assert!(!app.document.is_dirty());
+
+        app.document
+            .insert("new unsaved text")
+            .expect("dirty replacement fixture");
+        let requested_generation = app.buffer_generation;
+        let requested_revision = app.document.revision();
+        let _ = app.update(Message::OpenFile);
+        assert_eq!(app.discard_action, Some(DiscardAction::OpenFile));
+        let _ = app.update(Message::ConfirmDiscard);
+        assert!(app.file_busy);
+        assert_eq!(app.document.text(), "new unsaved text");
+
+        let _ = app.update(Message::FileOpened {
+            requested_generation,
+            requested_revision,
+            result: Err(FileError::DialogClosed),
+        });
+        assert!(!app.file_busy);
+        assert_eq!(app.document.text(), "new unsaved text");
+        assert!(app.document.is_dirty());
+    }
+
+    #[test]
+    fn close_request_requires_discard_confirmation_for_dirty_text() {
+        let (mut app, _speech, _codex) = test_app("Saved text");
+        app.document.insert(" plus edits").expect("dirty fixture");
+        let window = window::Id::unique();
+        let message = global_event(
+            Event::Window(window::Event::CloseRequested),
+            event::Status::Ignored,
+            window,
+        )
+        .expect("close request message");
+        assert!(matches!(message, Message::WindowCloseRequested(id) if id == window));
+
+        let _ = app.update(message);
+        assert_eq!(app.discard_action, Some(DiscardAction::CloseWindow(window)));
+        assert_eq!(app.document.text(), "Saved text plus edits");
+
+        let _ = app.update(Message::GlobalEscape);
+        assert!(app.discard_action.is_none());
+        assert_eq!(app.document.text(), "Saved text plus edits");
+    }
+
+    #[test]
+    fn iced_discard_confirmation_buttons_preserve_or_replace_the_buffer() -> Result<(), Error> {
+        let (mut app, _speech, _codex) = test_app("Saved text");
+        app.document.insert(" plus edits").expect("dirty fixture");
+        let dirty_text = app.document.text();
+        let _ = app.update(Message::NewFile);
+
+        let keep_messages = {
+            let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+            ui.click(id(DISCARD_KEEP_ID))?;
+            ui.into_messages().collect::<Vec<_>>()
+        };
+        for message in keep_messages {
+            let _ = app.update(message);
+        }
+        assert!(app.discard_action.is_none());
+        assert_eq!(app.document.text(), dirty_text);
+
+        let _ = app.update(Message::NewFile);
+        let discard_messages = {
+            let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+            ui.click(id(DISCARD_CONFIRM_ID))?;
+            ui.into_messages().collect::<Vec<_>>()
+        };
+        for message in discard_messages {
+            let _ = app.update(message);
+        }
+        assert!(app.discard_action.is_none());
+        assert_eq!(app.document.text(), "");
+        assert!(!app.document.is_dirty());
+        Ok(())
+    }
+
+    #[test]
     fn codex_worker_stop_clears_pending_work_and_keeps_raw_transcript() {
         let (mut app, speech, codex) = test_app("Notes: ");
         let timeout = Duration::from_secs(1);
@@ -5316,6 +5631,27 @@ mod tests {
         assert_button_label_centered(&mut ui, SETTINGS_APPLY_ID, "Apply changes")?;
 
         assert_tiny_skia_snapshot(&app, "settings-window", WINDOW_SIZE, None)
+    }
+
+    #[test]
+    #[ignore = "visual regression; run with ICED_TEST_BACKEND=tiny-skia"]
+    fn iced_discard_changes_window_snapshot() -> Result<(), Error> {
+        let (mut app, _speech, _codex) =
+            test_app("# Interview notes\n\nThese edits have not been saved yet.\n");
+        app.file = Some(PathBuf::from("notes/interview.md"));
+        app.document
+            .insert("One more thought.")
+            .expect("make the fixture dirty");
+        let _ = app.update(Message::OpenFile);
+
+        let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+        let _ = ui.find(id(DISCARD_MODAL_ID))?;
+        let _ = ui.find(id(DISCARD_KEEP_ID))?;
+        let _ = ui.find(id(DISCARD_CONFIRM_ID))?;
+        assert_button_label_centered(&mut ui, DISCARD_KEEP_ID, "Keep editing")?;
+        assert_button_label_centered(&mut ui, DISCARD_CONFIRM_ID, "Discard & open")?;
+
+        assert_tiny_skia_snapshot(&app, "discard-changes-window", WINDOW_SIZE, None)
     }
 
     #[test]

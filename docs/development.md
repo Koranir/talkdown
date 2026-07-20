@@ -70,6 +70,13 @@ dimension after zooming; it does not alter the document, cursor, or revision.
 Routine zoom feedback is contextual and does not open a banner. A successful
 shortcut adjustment persists both zoom scopes for the next launch.
 
+Dirty New, Open, and native window-close requests open an opaque confirmation
+modal. Keep editing or Escape preserves the document; the danger-styled action
+explicitly authorizes discarding it. Confirmed Open retains the dirty buffer
+while the picker and read are pending, so cancellation or failure still loses
+no text. The application disables iced's automatic close handling and closes
+the native window only after this guard has run.
+
 The toolbar Settings button and Ctrl/Cmd+comma open a staged modal for editor
 text, interface scale, visual word wrap, the dictation-checking provider, the
 Codex model, and the local transcription model.
@@ -220,9 +227,9 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 80 tests: 68 run and twelve are
-ignored. The no-default-feature build discovers 73: 64 run and nine are
-ignored. The README lists all twelve ignored tests.
+The default-feature build currently discovers 84 tests: 71 run and thirteen are
+ignored. The no-default-feature build discovers 77: 67 run and ten are
+ignored. The README lists all thirteen ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a
 real whisper.cpp model, and run:
@@ -247,20 +254,21 @@ baselines `tests/snapshots/main-window-tiny-skia.png`,
 `tests/snapshots/contextual-help-window-tiny-skia.png`,
 `tests/snapshots/checker-audit-window-tiny-skia.png`,
 `tests/snapshots/settings-window-tiny-skia.png`,
+`tests/snapshots/discard-changes-window-tiny-skia.png`,
 `tests/snapshots/model-download-window-tiny-skia.png`,
 `tests/snapshots/failure-window-tiny-skia.png`, and
 `tests/snapshots/minimum-window-tiny-skia.png`. They respectively cover a
 ready/success state, the hovered Normal-mode tooltip with its routine banner
 collapsed, a hovered applied/ignored Checker audit, the staged settings modal,
-a model-download failure with recovery,
+an unsaved-discard confirmation, a model-download failure with recovery,
 an unavailable Codex refinement with its
 raw transcript preserved, and the maximum 140% scale state at the enforced
 940 × 640 logical minimum. The
 minimum fixture hovers the offline Speech pill while its foreground error
 notice remains visible and also asserts that critical controls are visible,
 the voice heading and service chips align vertically, and footer cursor
-metadata remains centered. A seventh fixture hovers the Checker pill after a
-pass containing both applied and ignored findings. Run all seven with the shared
+metadata remains centered. Another fixture hovers the Checker pill after a
+pass containing both applied and ignored findings. Run all eight with the shared
 `window_snapshot` filter:
 
 ```sh
@@ -278,7 +286,7 @@ TALKDOWN_UPDATE_SNAPSHOTS=1 ICED_TEST_BACKEND=tiny-skia \
 ```
 
 The iced helper does not overwrite existing baselines. For an intentional
-refresh, preserve and move all seven files aside, then run the same creation
+refresh, preserve and move all eight files aside, then run the same creation
 command and review all replacements before keeping them:
 
 ```sh
@@ -287,6 +295,7 @@ mv tests/snapshots/main-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/contextual-help-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/checker-audit-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/settings-window-tiny-skia.png "$snapshot_backup_dir/"
+mv tests/snapshots/discard-changes-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/model-download-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/failure-window-tiny-skia.png "$snapshot_backup_dir/"
 mv tests/snapshots/minimum-window-tiny-skia.png "$snapshot_backup_dir/"
