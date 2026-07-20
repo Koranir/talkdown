@@ -221,16 +221,22 @@ unchanged.
 
 - Hold `Space`: literal insertion. Talkdown inserts the local final transcript
   immediately at the captured cursor/selection. By default, a reusable
-  `harper-core` pipeline checks the spoken text locally and automatically
+  `harper-core` pipeline then checks a bounded slice of surrounding document
+  text locally and automatically
   applies only non-overlapping, single-suggestion grammar, capitalization,
   punctuation, repetition, boundary, and typo fixes. Spelling guesses, style
-  rewrites, and ambiguous alternatives are deliberately skipped. Each pass
+  rewrites, and ambiguous alternatives are deliberately skipped. Only findings
+  in the sentence containing the inserted span may apply; findings elsewhere in
+  the context window are audited as outside the transcription. A deterministic
+  seam rule inserts missing whitespace on either side because Harper treats
+  strings such as `foo.Bar` as identifier-like and emits no lint. Each pass
   retains the complete applied/ignored decision audit in memory, including
   category, character span, Harper message, suggestions, and the reason for
   every skip, including a document-validation failure after correction. The
   Checker pill exposes the latest bounded summary; the audit is
   never persisted because messages may contain dictated text. The corrected
-  span amends the optimistic history entry, so one utterance remains one Undo.
+  context replacement restores the caret immediately after the corrected spoken
+  span and amends the optimistic history entry, so one utterance remains one Undo.
   Settings can instead select Codex refinement; that path selects the exact new
   span only in the snapshot sent to Codex, and the local validator rejects any
   attempt to leave it.

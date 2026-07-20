@@ -17,8 +17,9 @@ This repository is an early but runnable vertical slice. It already provides:
 - push-to-talk local Whisper transcription with a separate latest-wins partial
   decoder, so microphone capture and release handling never wait on inference;
 - optimistic literal insertion, followed by a one-undo-step local Harper check
-  by default, with an in-memory applied/ignored lint audit and Codex refinement
-  available as a setting;
+  over the surrounding sentence, including transcript-seam spacing, with an
+  in-memory applied/ignored lint audit and Codex refinement available as a
+  setting;
 - cursor/selection-aware contextual commands;
 - a persistent `codex app-server` client that uses ChatGPT subscription auth;
 - exact-target validation, stale-response handling, and bounded context;
@@ -234,8 +235,8 @@ cargo test --no-default-features \
   app::tests::intercepted_voice_edit_is_contextual_and_one_undo_step -- --exact
 ```
 
-The current default-feature build discovers 72 tests: 60 run normally and twelve
-are ignored. (`--no-default-features` discovers 65: 56 normal and nine
+The current default-feature build discovers 80 tests: 68 run normally and twelve
+are ignored. (`--no-default-features` discovers 73: 64 normal and nine
 ignored.) The ignored tests cover external state, real inference, or visual
 baselines:
 

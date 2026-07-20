@@ -22,11 +22,15 @@ spelling, style, enhancement, readability, regional preference, and every lint
 with multiple alternatives. This is a product safety policy, not a Harper API
 requirement.
 
-Harper operates on character spans, so fixes are applied to a standalone
-transcript before Talkdown re-adds cursor-sensitive word-boundary spacing. The
-final trusted replacement amends the immediately preceding optimistic insertion
-and therefore remains one undo transaction. Contextual commands never go
-through Harper.
+Harper operates on character spans. Talkdown now runs it after optimistic
+insertion against a bounded document slice and applies eligible findings only
+within the sentence containing the inserted span. A separate deterministic seam
+rule adds missing whitespace at either edge: Harper itself does not report
+identifier-like `foo.Bar` as an error. Findings in other sentences remain in the
+audit as outside the transcription scope. The final trusted context replacement
+restores the caret after the corrected spoken span, amends the immediately
+preceding optimistic insertion, and therefore remains one undo transaction.
+Contextual commands never go through Harper.
 
 Talkdown retains the latest Harper pass as an in-memory decision audit. Applied
 and ignored records include the lint kind, original character span, message,

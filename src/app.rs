@@ -1978,6 +1978,14 @@ impl App {
         };
     }
 
+    fn reject_latest_harper_audit(&mut self, reason: IgnoreReason) {
+        if let Some(mut audit) = self.last_harper_audit.take() {
+            audit.reject_applied(reason);
+            self.checker_status = lint_audit_summary(&audit);
+            self.last_harper_audit = Some(audit);
+        }
+    }
+
     fn default_notice(&self) -> Notice {
         let (title, detail) = self.mode_help();
         let (source, state) = match &self.active_utterance {
@@ -2527,23 +2535,51 @@ impl App {
         let changed = self.document.revision() != revision_before;
         match self.checking_provider {
             CheckingProvider::Harper => {
-                let checked = self.harper.check(&transcript);
+                let inserted = range.start..range.start + raw.len();
+                let checked_document = self.document.snapshot();
+                let context_range = harper_context_range(&checked_document.text, &inserted);
+                let context = &checked_document.text[context_range.clone()];
+                let focus_start = checked_document.text[context_range.start..inserted.start]
+                    .chars()
+                    .count();
+                let focus_end = checked_document.text[context_range.start..inserted.end]
+                    .chars()
+                    .count();
+                let checked = self.harper.check_focused(context, focus_start..focus_end);
                 let applied = checked.audit.fixes();
                 let ignored = checked.audit.ignored_count();
                 self.checker_status = lint_audit_summary(&checked.audit);
                 self.last_harper_audit = Some(checked.audit);
-                let corrected = fit_literal(&anchor, &checked.text);
-                if corrected != raw {
-                    match self.document.amend_last_replace(
-                        range.start..range.start + raw.len(),
-                        &corrected,
+                if checked.text != context {
+                    let Some(relative_cursor) =
+                        char_offset_to_byte(&checked.text, checked.focus_end)
+                    else {
+                        self.reject_latest_harper_audit(IgnoreReason::ApplicationFailed);
+                        self.set_notice(
+                            Notice::new(
+                                NoticeSource::Safety,
+                                UiState::Error,
+                                "Local grammar correction was skipped",
+                                "The corrected cursor position was not a valid UTF-8 boundary.",
+                            )
+                            .recovery(
+                                "The raw transcript remains in the document; Harper did not roll it back.",
+                            ),
+                        );
+                        return;
+                    };
+                    let cursor = context_range.start + relative_cursor;
+                    match self.document.amend_last_replace_with_cursor(
+                        context_range,
+                        &checked.text,
+                        cursor,
                     ) {
                         Ok(()) => self.set_notice(Notice::new(
                             NoticeSource::Checker,
                             UiState::Success,
                             "Dictation checked locally",
                             format!(
-                                "Harper applied {} unambiguous grammar {}. One Undo restores the text from before dictation.",
+                                "Harper applied {} focused local {} using the surrounding text. One Undo restores the text from before dictation.",
                                 applied,
                                 if applied == 1 { "fix" } else { "fixes" }
                             ),
@@ -2554,13 +2590,7 @@ impl App {
                             "Hover over Checker to review applied and ignored lint records."
                         })),
                         Err(error) => {
-                            let mut audit = self
-                                .last_harper_audit
-                                .take()
-                                .expect("the current Harper audit was just recorded");
-                            audit.reject_applied(IgnoreReason::ApplicationFailed);
-                            self.checker_status = lint_audit_summary(&audit);
-                            self.last_harper_audit = Some(audit);
+                            self.reject_latest_harper_audit(IgnoreReason::ApplicationFailed);
                             self.set_notice(
                                 Notice::new(
                                     NoticeSource::Safety,
@@ -4250,6 +4280,71 @@ fn fit_literal(snapshot: &DocumentSnapshot, transcript: &str) -> String {
     )
 }
 
+/// Keeps the local checker fast on large files while giving it enough prose on
+/// both sides of a transcript to resolve sentence and agreement boundaries.
+/// The returned byte range never begins or ends in the middle of UTF-8 or CRLF.
+fn harper_context_range(text: &str, focus: &std::ops::Range<usize>) -> std::ops::Range<usize> {
+    const CONTEXT_BYTES_PER_SIDE: usize = 512;
+
+    let mut start =
+        previous_char_boundary(text, focus.start.saturating_sub(CONTEXT_BYTES_PER_SIDE));
+    if start > 0 {
+        while start < focus.start {
+            let Some(next) = text[start..].chars().next() else {
+                break;
+            };
+            start += next.len_utf8();
+            if next.is_whitespace() {
+                while start < focus.start
+                    && text[start..]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_whitespace)
+                {
+                    start += text[start..].chars().next().unwrap().len_utf8();
+                }
+                break;
+            }
+        }
+    }
+
+    let mut end = next_char_boundary(
+        text,
+        focus
+            .end
+            .saturating_add(CONTEXT_BYTES_PER_SIDE)
+            .min(text.len()),
+    );
+    if end < text.len() {
+        while end > focus.end {
+            let Some(previous) = text[..end].chars().next_back() else {
+                break;
+            };
+            if previous.is_whitespace() {
+                break;
+            }
+            end -= previous.len_utf8();
+        }
+    }
+    if end > 0
+        && end < text.len()
+        && text.as_bytes()[end - 1] == b'\r'
+        && text.as_bytes()[end] == b'\n'
+    {
+        end += 1;
+    }
+
+    start..end
+}
+
+fn char_offset_to_byte(text: &str, offset: usize) -> Option<usize> {
+    if offset == text.chars().count() {
+        Some(text.len())
+    } else {
+        text.char_indices().nth(offset).map(|(byte, _)| byte)
+    }
+}
+
 fn previous_char_boundary(text: &str, mut offset: usize) -> usize {
     while offset > 0 && !text.is_char_boundary(offset) {
         offset -= 1;
@@ -4528,6 +4623,23 @@ mod tests {
         };
 
         assert_eq!(fit_literal(&snapshot, "friend"), "friend");
+    }
+
+    #[test]
+    fn harper_context_never_splits_utf8_or_crlf_boundaries() {
+        // Put `\r\n` exactly across the nominal 512-byte look-ahead cutoff.
+        let text = format!("x{}a\r\nrest", "é".repeat(255));
+        let focus = 0..1;
+        let context = harper_context_range(&text, &focus);
+
+        assert!(text.is_char_boundary(context.start));
+        assert!(text.is_char_boundary(context.end));
+        assert_ne!(
+            text.as_bytes()
+                .get(context.end.saturating_sub(1)..=context.end),
+            Some(&b"\r\n"[..])
+        );
+        assert!(context.start <= focus.start && context.end >= focus.end);
     }
 
     #[test]
@@ -5804,6 +5916,43 @@ mod tests {
         assert!(codex.try_request().is_none());
         assert!(app.document.undo());
         assert_eq!(app.document.text(), "Note: ");
+    }
+
+    #[test]
+    fn harper_repairs_the_document_seam_after_dictation() {
+        let (mut app, _speech, codex) = test_app("foo.");
+        app.checking_provider = CheckingProvider::Harper;
+        app.refresh_checker_status();
+        let anchor = app.document.snapshot();
+
+        app.optimistic_insert(anchor, "Bar".into());
+
+        assert_eq!(app.document.text(), "foo. Bar");
+        assert_eq!(app.document.snapshot().cursor, 8);
+        let audit = app.last_harper_audit.as_ref().expect("focused audit");
+        assert!(audit.applied.iter().any(|lint| {
+            lint.kind == harper_core::linting::LintKind::Punctuation
+                && lint.message.contains("before")
+        }));
+        assert!(codex.try_request().is_none());
+        assert!(app.document.undo());
+        assert_eq!(app.document.text(), "foo.");
+        assert!(!app.document.undo());
+    }
+
+    #[test]
+    fn harper_uses_same_sentence_context_and_preserves_the_spoken_cursor() {
+        let (mut app, _speech, _codex) = test_app("an ");
+        app.checking_provider = CheckingProvider::Harper;
+        app.refresh_checker_status();
+        let anchor = app.document.snapshot();
+
+        app.optimistic_insert(anchor, "test.".into());
+
+        assert_eq!(app.document.text(), "a test.");
+        assert_eq!(app.document.snapshot().cursor, 7);
+        assert!(app.document.undo());
+        assert_eq!(app.document.text(), "an ");
     }
 
     #[test]

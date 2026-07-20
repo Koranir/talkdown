@@ -131,7 +131,7 @@ impl Document {
 
     /// Applies a trusted replacement from the semantic edit pipeline.
     pub fn replace(&mut self, range: Range<usize>, replacement: &str) -> Result<(), ReplaceError> {
-        self.replace_inner(range, replacement, true)
+        self.replace_inner(range, replacement, true, None)
     }
 
     /// Refines the most recent optimistic dictation without adding a second
@@ -142,7 +142,18 @@ impl Document {
         range: Range<usize>,
         replacement: &str,
     ) -> Result<(), ReplaceError> {
-        self.replace_inner(range, replacement, false)
+        self.replace_inner(range, replacement, false, None)
+    }
+
+    /// Refines the latest optimistic dictation over a wider context range while
+    /// leaving the caret immediately after the corrected spoken span.
+    pub fn amend_last_replace_with_cursor(
+        &mut self,
+        range: Range<usize>,
+        replacement: &str,
+        cursor: usize,
+    ) -> Result<(), ReplaceError> {
+        self.replace_inner(range, replacement, false, Some(cursor))
     }
 
     fn replace_inner(
@@ -150,9 +161,27 @@ impl Document {
         range: Range<usize>,
         replacement: &str,
         record_history: bool,
+        requested_cursor: Option<usize>,
     ) -> Result<(), ReplaceError> {
         let text = self.content.text();
         validate_range(&text, &range)?;
+
+        let expected = {
+            let mut expected = text.clone();
+            expected.replace_range(range.clone(), replacement);
+            expected
+        };
+        if let Some(cursor) = requested_cursor {
+            validate_range(&expected, &(cursor..cursor))?;
+            let expected_content = Content::with_text(&expected);
+            if position_to_offset(
+                &expected_content,
+                offset_to_position(&expected_content, cursor),
+            ) != cursor
+            {
+                return Err(ReplaceError::NotEditorBoundary);
+            }
+        }
 
         let before = self.capture_state();
         let start = offset_to_position(&self.content, range.start);
@@ -174,21 +203,16 @@ impl Document {
 
         // Some editor backends treat an empty paste as a no-op. Rebuild in
         // that case so deletion-only plans remain deterministic.
-        let expected = {
-            let mut expected = text;
-            expected.replace_range(range.clone(), replacement);
-            expected
-        };
-
         if self.content.text() != expected {
             self.content = Content::with_text(&expected);
-            let new_cursor = range.start + replacement.len();
-            let position = offset_to_position(&self.content, new_cursor);
-            self.content.move_to(Cursor {
-                position,
-                selection: None,
-            });
         }
+
+        let new_cursor = requested_cursor.unwrap_or(range.start + replacement.len());
+        let position = offset_to_position(&self.content, new_cursor);
+        self.content.move_to(Cursor {
+            position,
+            selection: None,
+        });
 
         if self.content.text() != before.text {
             if record_history {
@@ -418,6 +442,21 @@ mod tests {
         assert_eq!(document.text(), "hello world");
         assert!(document.undo());
         assert_eq!(document.text(), "hello ");
+        assert!(!document.undo());
+    }
+
+    #[test]
+    fn contextual_refinement_preserves_the_spoken_span_cursor_and_undo_step() {
+        let mut document = Document::with_text("foo.");
+        document.replace(4..4, "Bar").unwrap();
+        document
+            .amend_last_replace_with_cursor(0..7, "foo. Bar", 8)
+            .unwrap();
+
+        assert_eq!(document.text(), "foo. Bar");
+        assert_eq!(document.snapshot().cursor, 8);
+        assert!(document.undo());
+        assert_eq!(document.text(), "foo.");
         assert!(!document.undo());
     }
 

@@ -76,8 +76,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 72 tests: 60 normal and twelve
-  ignored. The no-default-feature build discovers 65: 56 normal and nine
+- The default-feature build currently discovers 80 tests: 68 normal and twelve
+  ignored. The no-default-feature build discovers 73: 64 normal and nine
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo test` passes with the default feature and with
   `--no-default-features`.
@@ -242,8 +242,11 @@ Optimize in this order:
   unambiguously. Otherwise preserve text and surface a typed safety notice.
 - Literal dictation is inserted optimistically. Harper is the default checker
   and may auto-apply only a non-overlapping, single-suggestion conservative
-  grammar fix set; do not add spelling guesses or broad style rewrites without
-  an explicit review UI. Retain its latest complete lint audit in memory only;
+  grammar fix set. Its post-insertion pass receives a bounded document window,
+  may apply findings only within the sentence containing the transcript, and
+  supplies deterministic whitespace at the two transcript seams because Harper
+  does not lint identifier-like `foo.Bar`. Do not add spelling guesses or broad
+  style rewrites without an explicit review UI. Retain its latest complete lint audit in memory only;
   lint messages can contain dictated text, so do not persist or externally log
   them. If Settings selects Codex instead, its refinement may
   amend the immediately preceding history entry only when no intervening

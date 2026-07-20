@@ -82,9 +82,12 @@ launch, `TALKDOWN_WHISPER_MODEL` takes precedence, followed by that saved path,
 then an installed default. Unit tests intercept preference writes instead of
 touching the user's platform configuration file.
 Harper is the default literal-dictation checker. It runs fully locally and
-auto-applies only conservative single-suggestion fixes. Its latest in-memory
+performs a bounded post-insertion pass over the sentence containing the spoken
+span. It auto-applies only conservative single-suggestion fixes plus missing
+whitespace at either transcript seam. Its latest in-memory
 audit records every applied finding and every skipped finding, with explicit
-policy, ambiguity, missing-suggestion, overlap, or document-validation reasons;
+outside-sentence, policy, ambiguity, missing-suggestion, overlap, or
+document-validation reasons;
 hover the Checker pill to inspect the bounded presentation. Never persist or externally log that
 audit because Harper messages can repeat dictated text. Choosing Codex enables
 the richer context-aware refinement path. Contextual commands always use Codex.
@@ -217,8 +220,8 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 72 tests: 60 run and twelve are
-ignored. The no-default-feature build discovers 65: 56 run and nine are
+The default-feature build currently discovers 80 tests: 68 run and twelve are
+ignored. The no-default-feature build discovers 73: 64 run and nine are
 ignored. The README lists all twelve ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a

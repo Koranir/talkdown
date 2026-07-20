@@ -1,4 +1,4 @@
-use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
+use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::parsers::PlainEnglish;
 use harper_core::spell::FstDictionary;
 use harper_core::{Dialect, Document, remove_overlaps};
@@ -38,6 +38,8 @@ impl fmt::Display for CheckingProvider {
 pub struct CheckResult {
     pub text: String,
     pub audit: LintAudit,
+    /// Character offset immediately after the corrected focus span.
+    pub focus_end: usize,
 }
 
 /// The complete local decision record for one Harper pass. This is deliberately
@@ -70,7 +72,8 @@ impl LintAudit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintRecord {
-    /// Character offsets into the raw transcript, matching Harper's span unit.
+    /// Character offsets into the bounded checked context, matching Harper's
+    /// span unit.
     pub span: Range<usize>,
     pub kind: LintKind,
     pub message: String,
@@ -85,6 +88,8 @@ pub struct IgnoredLint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IgnoreReason {
+    /// The finding is present in context but outside the sentence being edited.
+    OutsideDictationSentence,
     /// Talkdown does not automatically apply this semantic category.
     PolicyExcluded,
     /// Harper did not provide an edit that could be applied automatically.
@@ -100,6 +105,7 @@ pub enum IgnoreReason {
 impl fmt::Display for IgnoreReason {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::OutsideDictationSentence => "outside the transcription’s sentence",
             Self::PolicyExcluded => "category is not safe for automatic dictation",
             Self::NoSuggestion => "no automatic replacement was offered",
             Self::Ambiguous => "multiple replacements were offered",
@@ -124,14 +130,39 @@ impl Default for HarperChecker {
 }
 
 impl HarperChecker {
+    #[cfg(test)]
     pub fn check(&mut self, source: &str) -> CheckResult {
+        let end = source.chars().count();
+        self.check_scoped(source, 0..end, end)
+    }
+
+    /// Checks a bounded slice of the document while applying only findings in
+    /// the sentence containing the newly inserted transcript. Character
+    /// offsets are relative to `source`, matching Harper's span unit.
+    pub fn check_focused(&mut self, source: &str, focus: Range<usize>) -> CheckResult {
+        let (normalized, focus, mut seam_fixes) = normalize_dictation_seams(source, focus);
+        let scope = containing_sentence(&normalized, &focus);
+        let mut result = self.check_scoped(&normalized, scope, focus.end);
+        seam_fixes.append(&mut result.audit.applied);
+        seam_fixes.sort_by_key(|lint| (lint.span.start, lint.span.end));
+        result.audit.applied = seam_fixes;
+        result
+    }
+
+    fn check_scoped(&mut self, source: &str, scope: Range<usize>, focus_end: usize) -> CheckResult {
+        let source_len = source.chars().count();
+        let scope = scope.start.min(source_len)..scope.end.min(source_len);
         let document = Document::new_curated(source, &PlainEnglish);
         let detected = self.linter.lint(&document);
         let mut candidates = Vec::new();
         let mut ignored = Vec::new();
 
         for lint in detected {
-            let reason = automatic_ignore_reason(&lint);
+            let reason = if !overlaps(&lint, &scope) {
+                Some(IgnoreReason::OutsideDictationSentence)
+            } else {
+                automatic_ignore_reason(&lint)
+            };
 
             if let Some(reason) = reason {
                 ignored.push(IgnoredLint {
@@ -167,14 +198,121 @@ impl HarperChecker {
         selected.sort_by_key(|lint| std::cmp::Reverse((lint.span.start, lint.span.end)));
 
         let mut corrected: Vec<char> = source.chars().collect();
+        let mut focus_end = focus_end.min(source_len);
         for lint in selected {
+            focus_end = map_boundary_after_suggestion(focus_end, &lint);
             lint.suggestions[0].apply(lint.span, &mut corrected);
         }
 
         CheckResult {
             text: corrected.into_iter().collect(),
             audit: LintAudit { applied, ignored },
+            focus_end,
         }
+    }
+}
+
+fn containing_sentence(source: &str, focus: &Range<usize>) -> Range<usize> {
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut start = focus.start.min(chars.len());
+    while start > 0 {
+        if matches!(chars[start - 1], '.' | '!' | '?' | '\n' | '\r') {
+            break;
+        }
+        start -= 1;
+    }
+
+    let mut end = focus.end.min(chars.len());
+    let focus_ends_sentence = chars[focus.start.min(end)..end]
+        .iter()
+        .rev()
+        .find(|character| !character.is_whitespace())
+        .is_some_and(|character| matches!(character, '.' | '!' | '?'));
+    if focus_ends_sentence {
+        return start..end;
+    }
+
+    while end < chars.len() {
+        let boundary = matches!(chars[end], '.' | '!' | '?' | '\n' | '\r');
+        end += 1;
+        if boundary {
+            break;
+        }
+    }
+
+    start..end
+}
+
+fn normalize_dictation_seams(
+    source: &str,
+    focus: Range<usize>,
+) -> (String, Range<usize>, Vec<LintRecord>) {
+    let mut chars = source.chars().collect::<Vec<_>>();
+    let mut focus = focus.start.min(chars.len())..focus.end.min(chars.len());
+    let mut applied = Vec::new();
+
+    if focus.start > 0
+        && focus.start < chars.len()
+        && needs_dictation_space(chars[focus.start - 1], chars[focus.start])
+    {
+        let position = focus.start;
+        chars.insert(position, ' ');
+        focus = focus.start + 1..focus.end + 1;
+        applied.push(seam_lint(position, "before"));
+    }
+
+    if focus.end > 0
+        && focus.end < chars.len()
+        && needs_dictation_space(chars[focus.end - 1], chars[focus.end])
+    {
+        let position = focus.end;
+        chars.insert(position, ' ');
+        focus.end += 1;
+        applied.push(seam_lint(position, "after"));
+    }
+
+    (chars.into_iter().collect(), focus, applied)
+}
+
+fn needs_dictation_space(left: char, right: char) -> bool {
+    if left.is_whitespace() || right.is_whitespace() {
+        return false;
+    }
+
+    (left.is_alphanumeric() && right.is_alphanumeric())
+        || (matches!(left, '.' | ',' | '!' | '?' | ';' | ':') && right.is_alphanumeric())
+}
+
+fn seam_lint(position: usize, side: &str) -> LintRecord {
+    LintRecord {
+        span: position..position,
+        kind: LintKind::Punctuation,
+        message: format!("Missing whitespace {side} the transcribed text."),
+        suggestions: vec!["Insert “ ”".into()],
+    }
+}
+
+fn overlaps(lint: &Lint, focus: &Range<usize>) -> bool {
+    if lint.span.start == lint.span.end {
+        focus.start <= lint.span.start && lint.span.start <= focus.end
+    } else {
+        lint.span.start < focus.end && focus.start < lint.span.end
+    }
+}
+
+fn map_boundary_after_suggestion(boundary: usize, lint: &Lint) -> usize {
+    let (start, end, replacement_len) = match &lint.suggestions[0] {
+        Suggestion::ReplaceWith(chars) => (lint.span.start, lint.span.end, chars.len()),
+        Suggestion::Remove => (lint.span.start, lint.span.end, 0),
+        Suggestion::InsertAfter(chars) => (lint.span.end, lint.span.end, chars.len()),
+    };
+
+    if end <= boundary {
+        boundary - (end - start) + replacement_len
+    } else if start < boundary {
+        start + replacement_len
+    } else {
+        boundary
     }
 }
 
@@ -231,10 +369,57 @@ mod tests {
 
     #[test]
     fn fixes_missing_space_at_a_sentence_boundary() {
-        let result = HarperChecker::default().check("foo.Bar");
+        let result = HarperChecker::default().check_focused("foo.Bar", 4..7);
 
         assert_eq!(result.text, "foo. Bar");
         assert!(!result.audit.applied.is_empty());
+        assert_eq!(result.focus_end, 8);
+        assert!(
+            result.audit.applied.iter().any(|lint| {
+                lint.kind == LintKind::Punctuation && lint.message.contains("before")
+            })
+        );
+    }
+
+    #[test]
+    fn focused_check_uses_context_but_does_not_rewrite_old_errors() {
+        let result = HarperChecker::default().check_focused("this is an note.New words", 16..25);
+
+        assert_eq!(result.text, "this is an note. New words");
+        assert!(result.audit.ignored.iter().any(|ignored| {
+            ignored.reason == IgnoreReason::OutsideDictationSentence
+                && ignored.lint.message.contains("indefinite article")
+        }));
+    }
+
+    #[test]
+    fn focused_check_can_fix_the_adjacent_context_in_the_same_sentence() {
+        let result = HarperChecker::default().check_focused("an test.", 3..8);
+
+        assert_eq!(result.text, "a test.");
+        assert_eq!(result.focus_end, 7);
+        assert!(
+            result
+                .audit
+                .applied
+                .iter()
+                .any(|lint| lint.message.contains("indefinite article"))
+        );
+    }
+
+    #[test]
+    fn focused_check_stops_after_a_dictated_sentence() {
+        let mut checker = HarperChecker::default();
+
+        let result = checker.check_focused("New words.an note.", 0..10);
+
+        assert_eq!(result.text, "New words. an note.");
+        assert_eq!(result.focus_end, 11);
+        assert_eq!(result.audit.applied.len(), 1);
+        assert!(result.audit.ignored.iter().any(|lint| {
+            lint.reason == IgnoreReason::OutsideDictationSentence
+                && lint.lint.message.to_lowercase().contains("article")
+        }));
     }
 
     #[test]
