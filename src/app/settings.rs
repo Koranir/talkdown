@@ -26,6 +26,8 @@ impl App {
             text_scale_percent: self.text_scale_percent,
             ui_scale_percent: self.ui_scale_percent,
             word_wrap: self.word_wrap,
+            reduce_audio_while_listening: self.reduce_audio_while_listening,
+            audio_multiplier_percent: self.audio_multiplier_percent,
         };
 
         #[cfg(test)]
@@ -50,6 +52,11 @@ impl App {
             .ui_scale_percent
             .clamp(MIN_UI_SCALE_PERCENT, MAX_UI_SCALE_PERCENT);
         self.word_wrap = preferences.word_wrap;
+        self.reduce_audio_while_listening = preferences.reduce_audio_while_listening;
+        self.audio_multiplier_percent = preferences.audio_multiplier_percent.clamp(
+            model::MIN_AUDIO_MULTIPLIER_PERCENT,
+            model::MAX_AUDIO_MULTIPLIER_PERCENT,
+        );
         self.refresh_checker_status();
     }
 
@@ -89,6 +96,8 @@ impl App {
                 text_scale_percent: self.text_scale_percent,
                 ui_scale_percent: self.ui_scale_percent,
                 word_wrap: self.word_wrap,
+                reduce_audio_while_listening: self.reduce_audio_while_listening,
+                audio_multiplier_percent: self.audio_multiplier_percent,
                 speech_model_path: self.speech_model_path.clone(),
                 checking_provider: self.checking_provider,
                 codex_model: self.codex_model.clone(),
@@ -122,6 +131,24 @@ impl App {
     pub(super) fn toggle_settings_word_wrap(&mut self) -> Task<Message> {
         if let Some(settings) = self.settings.as_mut() {
             settings.word_wrap = !settings.word_wrap;
+        }
+        Task::none()
+    }
+
+    pub(super) fn toggle_settings_reduce_audio(&mut self) -> Task<Message> {
+        if let Some(settings) = self.settings.as_mut() {
+            settings.reduce_audio_while_listening = !settings.reduce_audio_while_listening;
+        }
+        Task::none()
+    }
+
+    pub(super) fn adjust_settings_audio_multiplier(&mut self, delta: i16) -> Task<Message> {
+        if let Some(settings) = self.settings.as_mut() {
+            settings.audio_multiplier_percent =
+                (i32::from(settings.audio_multiplier_percent) + i32::from(delta)).clamp(
+                    i32::from(model::MIN_AUDIO_MULTIPLIER_PERCENT),
+                    i32::from(model::MAX_AUDIO_MULTIPLIER_PERCENT),
+                ) as u16;
         }
         Task::none()
     }
@@ -246,6 +273,8 @@ impl App {
 
     fn apply_settings_values(&mut self, settings: &SettingsDraft) {
         self.word_wrap = settings.word_wrap;
+        self.reduce_audio_while_listening = settings.reduce_audio_while_listening;
+        self.audio_multiplier_percent = settings.audio_multiplier_percent;
         self.text_scale_percent = settings.text_scale_percent;
         self.checking_provider = settings.checking_provider;
         self.refresh_checker_status();

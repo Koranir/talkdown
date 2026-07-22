@@ -22,6 +22,7 @@ use crate::edit::{EditIntent, ProposedEdit};
 use crate::file_watch::{FileWatchEvent, FileWatcher};
 use crate::model::{self, DefaultModelDownload, DownloadEvent, ModelSource};
 use crate::speech::{SpeechBridge, SpeechEvent};
+use crate::system_audio::{AudioReductionEvent, SystemAudioBridge};
 
 use iced::event;
 use iced::highlighter;
@@ -85,6 +86,9 @@ const SETTINGS_TEXT_SCALE_UP_ID: &str = "talkdown-settings-text-scale-up";
 const SETTINGS_UI_SCALE_DOWN_ID: &str = "talkdown-settings-ui-scale-down";
 const SETTINGS_UI_SCALE_UP_ID: &str = "talkdown-settings-ui-scale-up";
 const SETTINGS_WRAP_ID: &str = "talkdown-settings-wrap";
+const SETTINGS_REDUCE_AUDIO_ID: &str = "talkdown-settings-reduce-audio";
+const SETTINGS_AUDIO_MULTIPLIER_DOWN_ID: &str = "talkdown-settings-audio-multiplier-down";
+const SETTINGS_AUDIO_MULTIPLIER_UP_ID: &str = "talkdown-settings-audio-multiplier-up";
 const SETTINGS_CHECKER_ID: &str = "talkdown-settings-checker";
 const SETTINGS_CODEX_MODEL_ID: &str = "talkdown-settings-codex-model";
 const SETTINGS_MODEL_CHOOSE_ID: &str = "talkdown-settings-model-choose";
@@ -107,6 +111,7 @@ const DEFAULT_UI_SCALE_PERCENT: u16 = model::DEFAULT_UI_SCALE_PERCENT;
 const MIN_UI_SCALE_PERCENT: u16 = model::MIN_UI_SCALE_PERCENT;
 const MAX_UI_SCALE_PERCENT: u16 = model::MAX_UI_SCALE_PERCENT;
 const UI_SCALE_STEP_PERCENT: i16 = 10;
+const AUDIO_MULTIPLIER_STEP_PERCENT: i16 = 10;
 
 const UI_FONT: Font = Font::new("Atkinson Hyperlegible Next");
 const UI_SEMIBOLD_FONT: Font = UI_FONT.weight(font::Weight::Semibold);
@@ -162,6 +167,7 @@ enum NoticeSource {
     Editor,
     File,
     Speech,
+    SystemAudio,
     Codex,
     Safety,
 }
@@ -223,7 +229,10 @@ impl Notice {
         };
         let safety = match self.source {
             NoticeSource::File | NoticeSource::Safety => 10,
-            NoticeSource::Editor | NoticeSource::Speech | NoticeSource::Codex => 0,
+            NoticeSource::Editor
+            | NoticeSource::Speech
+            | NoticeSource::SystemAudio
+            | NoticeSource::Codex => 0,
         };
         severity + safety
     }
@@ -286,6 +295,8 @@ struct SettingsDraft {
     text_scale_percent: u16,
     ui_scale_percent: u16,
     word_wrap: bool,
+    reduce_audio_while_listening: bool,
+    audio_multiplier_percent: u16,
     speech_model_path: Option<PathBuf>,
     checking_provider: CheckingProvider,
     codex_model: Option<String>,
@@ -364,6 +375,7 @@ enum Message {
 
     // Worker and watcher notifications that may cross modal shields.
     SpeechWorkerEvent(u64, SpeechEvent),
+    AudioReductionEvent(u64, AudioReductionEvent),
     CodexWorkerEvent(u64, CodexEvent),
     ModelDownloadEvent(u64, DownloadEvent),
     FileWatchEvent(FileWatchEvent),
@@ -390,6 +402,8 @@ enum Message {
     SettingsAdjustTextScale(i16),
     SettingsAdjustUiScale(i16),
     SettingsToggleWordWrap,
+    SettingsToggleReduceAudio,
+    SettingsAdjustAudioMultiplier(i16),
     SettingsCheckingProviderSelected(CheckingProvider),
     SettingsCodexModelSelected(CodexModelChoice),
     SettingsChooseModel,
@@ -443,6 +457,7 @@ impl Message {
                 | Self::EditorScrollbarScrolled(_)
                 | Self::EditorScrollMetrics { .. }
                 | Self::SpeechWorkerEvent(_, _)
+                | Self::AudioReductionEvent(_, _)
                 | Self::CodexWorkerEvent(_, _)
                 | Self::ModelDownloadEvent(_, _)
                 | Self::FileWatchEvent(_)
@@ -463,6 +478,8 @@ impl Message {
             Self::SettingsAdjustTextScale(_)
                 | Self::SettingsAdjustUiScale(_)
                 | Self::SettingsToggleWordWrap
+                | Self::SettingsToggleReduceAudio
+                | Self::SettingsAdjustAudioMultiplier(_)
                 | Self::SettingsCheckingProviderSelected(_)
                 | Self::SettingsCodexModelSelected(_)
                 | Self::SettingsChooseModel
@@ -505,6 +522,7 @@ struct ActiveUtterance {
     trigger: SpeechTrigger,
     snapshot: DocumentSnapshot,
     finish_requested: bool,
+    audio_reduction_requested: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -611,6 +629,8 @@ struct App {
     mode: Mode,
     syntax_theme: highlighter::Theme,
     word_wrap: bool,
+    reduce_audio_while_listening: bool,
+    audio_multiplier_percent: u16,
     text_scale_percent: u16,
     ui_scale_percent: u16,
     editor_scroll_y: f32,
@@ -659,6 +679,7 @@ struct App {
 
     // Worker bridges and generation-scoped semantic transactions.
     speech: SpeechBridge,
+    system_audio: SystemAudioBridge,
     codex: CodexBridge,
     active_utterance: Option<ActiveUtterance>,
     pending: BTreeMap<u64, PendingEdit>,
@@ -753,6 +774,8 @@ impl App {
             mode: Mode::Normal,
             syntax_theme: highlighter::Theme::Base16Ocean,
             word_wrap: true,
+            reduce_audio_while_listening: model::DEFAULT_REDUCE_AUDIO_WHILE_LISTENING,
+            audio_multiplier_percent: model::DEFAULT_AUDIO_MULTIPLIER_PERCENT,
             text_scale_percent: DEFAULT_TEXT_SCALE_PERCENT,
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
             editor_scroll_y: 0.0,
@@ -789,6 +812,10 @@ impl App {
             codex_preview: String::new(),
             microphone_level: 0.0,
             speech,
+            #[cfg(not(test))]
+            system_audio: SystemAudioBridge::start(),
+            #[cfg(test)]
+            system_audio: SystemAudioBridge::intercepted(),
             codex,
             active_utterance: None,
             pending: BTreeMap::new(),
@@ -866,6 +893,9 @@ impl App {
             self.speech
                 .subscription()
                 .map(|(id, event)| Message::SpeechWorkerEvent(id, event)),
+            self.system_audio
+                .subscription()
+                .map(|(id, event)| Message::AudioReductionEvent(id, event)),
             self.codex
                 .subscription()
                 .map(|(id, event)| Message::CodexWorkerEvent(id, event)),
@@ -981,6 +1011,10 @@ impl App {
             Message::SettingsAdjustTextScale(delta) => self.adjust_settings_text_scale(delta),
             Message::SettingsAdjustUiScale(delta) => self.adjust_settings_ui_scale(delta),
             Message::SettingsToggleWordWrap => self.toggle_settings_word_wrap(),
+            Message::SettingsToggleReduceAudio => self.toggle_settings_reduce_audio(),
+            Message::SettingsAdjustAudioMultiplier(delta) => {
+                self.adjust_settings_audio_multiplier(delta)
+            }
             Message::SettingsCheckingProviderSelected(provider) => {
                 self.select_settings_checker(provider)
             }
@@ -1035,6 +1069,9 @@ impl App {
                 Task::none()
             }
             Message::SpeechWorkerEvent(id, event) => self.handle_current_speech_event(id, event),
+            Message::AudioReductionEvent(id, event) => {
+                self.handle_current_audio_reduction_event(id, event)
+            }
             Message::CodexWorkerEvent(id, event) => self.handle_current_codex_event(id, event),
             Message::ModelDownloadEvent(id, event) => {
                 self.handle_current_model_download_event(id, event)
@@ -1045,6 +1082,17 @@ impl App {
     fn handle_current_speech_event(&mut self, id: u64, event: SpeechEvent) -> Task<Message> {
         if id == self.speech.subscription_id() {
             self.handle_speech(event);
+        }
+        Task::none()
+    }
+
+    fn handle_current_audio_reduction_event(
+        &mut self,
+        id: u64,
+        event: AudioReductionEvent,
+    ) -> Task<Message> {
+        if id == self.system_audio.subscription_id() {
+            self.handle_audio_reduction(event);
         }
         Task::none()
     }
@@ -1182,6 +1230,9 @@ impl App {
     /// responsible for Normal mode, deferred Codex work, and editor focus.
     fn cancel_active_recording_on_escape(&mut self) {
         if let Some(active) = self.active_utterance.take() {
+            if active.audio_reduction_requested {
+                self.restore_audio_after_recording(active.id);
+            }
             let cancel_result = self.speech.cancel(active.id);
             self.partial_transcript.clear();
             self.microphone_level = 0.0;
@@ -1227,6 +1278,11 @@ impl App {
         let speech_events: Vec<_> = self.speech.try_events().collect();
         for event in speech_events {
             self.handle_speech(event);
+        }
+
+        let audio_events: Vec<_> = self.system_audio.try_events().collect();
+        for event in audio_events {
+            self.handle_audio_reduction(event);
         }
 
         let codex_events: Vec<_> = self.codex.try_events().collect();

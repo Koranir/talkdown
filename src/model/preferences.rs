@@ -11,8 +11,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use super::{
-    DEFAULT_MODEL_NAME, DEFAULT_TEXT_SCALE_PERCENT, DEFAULT_UI_SCALE_PERCENT,
-    MAX_TEXT_SCALE_PERCENT, MAX_UI_SCALE_PERCENT, MIN_TEXT_SCALE_PERCENT, MIN_UI_SCALE_PERCENT,
+    DEFAULT_AUDIO_MULTIPLIER_PERCENT, DEFAULT_MODEL_NAME, DEFAULT_TEXT_SCALE_PERCENT,
+    DEFAULT_UI_SCALE_PERCENT, MAX_AUDIO_MULTIPLIER_PERCENT, MAX_TEXT_SCALE_PERCENT,
+    MAX_UI_SCALE_PERCENT, MIN_AUDIO_MULTIPLIER_PERCENT, MIN_TEXT_SCALE_PERCENT,
+    MIN_UI_SCALE_PERCENT,
 };
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -42,6 +44,8 @@ pub struct AppPreferences {
     pub text_scale_percent: u16,
     pub ui_scale_percent: u16,
     pub word_wrap: bool,
+    pub reduce_audio_while_listening: bool,
+    pub audio_multiplier_percent: u16,
 }
 
 impl Default for AppPreferences {
@@ -53,6 +57,8 @@ impl Default for AppPreferences {
             text_scale_percent: DEFAULT_TEXT_SCALE_PERCENT,
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
             word_wrap: true,
+            reduce_audio_while_listening: super::DEFAULT_REDUCE_AUDIO_WHILE_LISTENING,
+            audio_multiplier_percent: DEFAULT_AUDIO_MULTIPLIER_PERCENT,
         }
     }
 }
@@ -166,6 +172,9 @@ fn normalize_loaded_preferences(mut preferences: AppPreferences) -> AppPreferenc
     preferences.ui_scale_percent = preferences
         .ui_scale_percent
         .clamp(MIN_UI_SCALE_PERCENT, MAX_UI_SCALE_PERCENT);
+    preferences.audio_multiplier_percent = preferences
+        .audio_multiplier_percent
+        .clamp(MIN_AUDIO_MULTIPLIER_PERCENT, MAX_AUDIO_MULTIPLIER_PERCENT);
     preferences
 }
 

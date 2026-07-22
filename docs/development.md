@@ -94,7 +94,7 @@ Escape keeps the editor version. Deletion, read, and watcher failures retain the
 buffer and show recovery guidance. In-flight reads are generation-guarded
 across Open and Save.
 
-Speech, Codex, model-download, and file-watch events each arrive through an
+Speech, system-audio, Codex, model-download, and file-watch events each arrive through an
 iced subscription backed by an async-waking channel. The application has no
 fixed 30 FPS polling tick; worker output schedules UI updates immediately.
 Bridge replacements use a fresh stream identity, while intercepted tests drain
@@ -102,12 +102,14 @@ the same receivers directly. The only periodic UI subscription is the guarded
 250 ms Normal-mode caret refresh described below.
 
 The toolbar Settings button and Ctrl/Cmd+comma open a staged modal for editor
-text, interface scale, visual word wrap, the dictation-checking provider, the
-Codex model, and the local transcription model.
+text, interface scale, visual word wrap, reduction of other audio while
+recording, the dictation-checking provider, the Codex model, and the local
+transcription model.
 Apply commits the staged values and restarts the speech worker only when its
 selected model changed; Cancel or Escape discards the staged selection. The
 speech-model path, checking provider, Codex model, editor-text scale, interface
-scale, and word wrap are persisted atomically
+scale, word wrap, audio-reduction choice, and listening-volume multiplier are
+persisted atomically
 in the platform configuration directory. At
 launch, `TALKDOWN_WHISPER_MODEL` takes precedence, followed by that saved path,
 then an installed default. Unit tests intercept preference writes instead of
@@ -141,6 +143,18 @@ cancels. Keep the committed values separate from
 `SettingsDraft` when adding fields or persistence. Settings also waits for any
 pending Codex edit to finish before opening, so changing its model cannot strand
 an in-flight edit.
+
+“Reduce other audio” defaults on for Linux and macOS. “Listening volume”
+defaults to 20% and multiplies the speaker level captured at the start of each
+recording; for example, 60% × 25% becomes 15%, while 100% is a no-op. Talkdown starts the system-audio action only
+after Speech accepts microphone capture and restores it as soon as recording
+ends; Whisper finalization does not keep speakers reduced. The work runs on a
+dedicated serialized worker, never the UI or CPAL callback. Linux lowers
+the default PipeWire/Pulse-compatible sink with `wpctl` or `pactl`. macOS lowers
+the system output volume.
+Talkdown restores only the exact level it set, preserving a volume adjustment
+made by the user during recording. Other platforms report a non-destructive
+warning; turn the setting off there if no supported system control is available.
 
 Pinned iced has no text-editor caret style or blink-control API. Talkdown keeps
 the focused Normal-mode caret steady with a 250 ms focus/blink-epoch refresh.

@@ -95,8 +95,8 @@ Missing or unreadable files produce sticky file notices and never become an
 empty replacement. Watcher setup or runtime failure is visible as a typed file
 warning and leaves the editor usable.
 
-Worker-to-UI delivery is event-driven. Speech, Codex, model-download, and file-
-watch bridges publish through async-waking channels whose stable IDs back iced
+Worker-to-UI delivery is event-driven. Speech, system-audio, Codex,
+model-download, and file-watch bridges publish through async-waking channels whose stable IDs back iced
 subscriptions. A Settings-driven bridge replacement creates a new ID, causing
 iced to retire the old stream without confusing events from two workers. There
 is no fixed-rate application event pump: each result schedules `update`
@@ -104,6 +104,19 @@ directly. High-frequency visual producers remain rate-limited deliberately—spe
 meter levels are emitted at no more than 20 Hz and download progress at no more
 than 5 Hz. The independent 250 ms subscription remains solely for pinned
 iced's guarded steady-caret workaround.
+
+System-audio reduction has its own serialized command worker. Once Speech
+accepts a recording, the UI enqueues the utterance ID without waiting for an OS
+audio command. Releasing or cancelling the recording immediately enqueues the
+matching restore before local transcription continues. The worker snapshots
+the existing output level, multiplies it by the staged 0–100% listening-volume
+setting, and restores it only when
+the current level still matches the value Talkdown set, so a user adjustment
+during recording wins. On Linux it tries PipeWire `wpctl`, then
+Pulse-compatible `pactl`; on
+macOS it uses the system output-volume control. Worker shutdown also restores
+an active snapshot. Unsupported or failed control is a typed warning and never
+blocks recording or changes document text.
 
 New, Open, and native close requests route dirty documents through
 `discard_action: Option<DiscardAction>`. Its opaque modal blocks background
@@ -219,9 +232,9 @@ document text, UTF-8 cursor offsets, or revision state, and its routine feedback
 contextual instead of opening a banner.
 
 `settings: Option<SettingsDraft>` owns the modal transaction. Opening Settings
-copies the committed editor-text scale, UI scale, word wrap, and speech-model
-path into the draft together with the dictation-checking provider and optional
-Codex model. The opaque stack layer blocks pointer input, while an
+copies the committed editor-text scale, UI scale, word wrap, system-audio
+reduction choice and multiplier, and speech-model path into the draft together with the
+dictation-checking provider and optional Codex model. The opaque stack layer blocks pointer input, while an
 update guard rejects underlying editor commands; the Normal-mode caret refresh
 pauses as well. Apply commits the values together, runs UI scale/minimum-window
 tasks, replaces the speech worker only when its model changed, and replaces the
@@ -230,7 +243,8 @@ draft. Ctrl/Cmd+comma and the toolbar button open it when no recording, typed
 command, file operation, or Codex edit is active. Inside, plain `+`/`-`
 stages editor text, Ctrl/Cmd `+`/`-` stages UI scale, `W` toggles wrap, and Enter
 applies. The speech-model path, checking provider, Codex-model selection,
-editor-text scale, interface scale, and word wrap are persisted atomically. The
+editor-text scale, interface scale, word wrap, and system-audio reduction
+choice and multiplier are persisted atomically. The
 preference body scrolls while its header and Apply/Cancel actions stay fixed.
 
 Presentation is deliberately typed. `UiState` distinguishes `Info`, `Ready`,

@@ -522,10 +522,12 @@ impl App {
     }
 
     fn abandon_document_work(&mut self) {
-        let cancel_result = self
-            .active_utterance
-            .take()
-            .map(|active| self.speech.cancel(active.id));
+        let cancel_result = self.active_utterance.take().map(|active| {
+            if active.audio_reduction_requested {
+                self.restore_audio_after_recording(active.id);
+            }
+            self.speech.cancel(active.id)
+        });
         self.partial_transcript.clear();
         self.microphone_level = 0.0;
         let deferred = std::mem::take(&mut self.deferred_codex);

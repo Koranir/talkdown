@@ -80,8 +80,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 91 tests: 78 normal and thirteen
-  ignored. The no-default-feature build discovers 84: 74 normal and ten
+- The default-feature build currently discovers 94 tests: 81 normal and thirteen
+  ignored. The no-default-feature build discovers 87: 77 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo nextest run` passes with the default feature and with
   `--no-default-features`; nextest keeps concurrent iced simulators in isolated
@@ -103,6 +103,9 @@ Optimize in this order:
   `input.rs` owns modal bindings and atomic steady-caret maintenance;
   `transcription.rs` owns UTF-8-safe dictation helpers; `file_io.rs` owns native
   dialog/disk adapters; and `tests.rs` owns the whole-app regression harness.
+- `src/system_audio.rs`: utterance-scoped, serialized system-audio reduction;
+  multiplies the captured speaker volume by the configured percentage and
+  conditionally restores it without blocking the UI or audio callback.
 - `src/checker.rs` and `src/checker/`: provider/result/audit facade plus the
   staged conservative Harper implementation in `harper.rs`: scoped
   classification, overlap selection, correction application, seam
@@ -272,7 +275,8 @@ Optimize in this order:
   footer; its shortcut cell reads `I insert · : cmd · +/- text`,
   and routine zoom feedback is contextual instead of opening a banner.
 - The Settings modal stages editor-text zoom, interface scale, word wrap,
-  speech-model path, checking provider, and Codex model in `SettingsDraft`.
+  reduction of other audio while recording and its multiplier, speech-model
+  path, checking provider, and Codex model in `SettingsDraft`.
   Apply commits them together; Cancel or Escape discards the staged selection.
   Its opaque layer
   and update guard must keep every underlying editor or modal command inert
@@ -280,8 +284,10 @@ Optimize in this order:
   keep Ctrl/Cmd+comma plus the toolbar button as entry points. Do not open it
   while a Codex edit is pending, because applying a model change replaces the
   worker. Speech path, checker provider, Codex model, editor-text scale,
-  interface scale, and word wrap are persisted together. Tests must intercept
-  preference writes and never modify the user's real configuration file.
+  interface scale, word wrap, system-audio reduction, and its listening-volume
+  multiplier are persisted together.
+  Tests must intercept preference writes and never modify the user's real
+  configuration file.
 
 ### Semantic edits
 
@@ -359,7 +365,13 @@ Optimize in this order:
 - The CPAL callback may downmix and enqueue bounded chunks only. It must never
   block, perform inference, touch iced state, or grow an unbounded buffer.
 - UI, capture, Whisper, and Codex work remain separated by message channels.
-- Speech, Codex, model-download, and file-watch results wake iced through
+- System-audio reduction runs on its own serialized worker. Begin only after
+  Speech accepts capture, restore on release/cancel before final inference, and
+  restore an active snapshot on shutdown. Never run OS audio commands on the UI
+  or CPAL callback. Preserve a speaker-volume change made by the user during
+  capture rather than overwriting it during restore. Apply the configured
+  0–100% value as a multiplier of the captured level, never an absolute cap.
+- Speech, system-audio, Codex, model-download, and file-watch results wake iced through
   source-owned subscriptions; do not restore a fixed-rate UI polling loop.
   Replacing a Speech/Codex bridge must also replace its stable subscription
   identity so iced retires the old stream. Rate-limit high-frequency visual

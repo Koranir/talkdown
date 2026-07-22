@@ -69,6 +69,11 @@ pub const MAX_TEXT_SCALE_PERCENT: u16 = 200;
 pub const DEFAULT_UI_SCALE_PERCENT: u16 = 100;
 pub const MIN_UI_SCALE_PERCENT: u16 = 80;
 pub const MAX_UI_SCALE_PERCENT: u16 = 140;
+pub const DEFAULT_REDUCE_AUDIO_WHILE_LISTENING: bool =
+    cfg!(any(target_os = "linux", target_os = "macos"));
+pub const DEFAULT_AUDIO_MULTIPLIER_PERCENT: u16 = 20;
+pub const MIN_AUDIO_MULTIPLIER_PERCENT: u16 = 0;
+pub const MAX_AUDIO_MULTIPLIER_PERCENT: u16 = 100;
 
 #[cfg(test)]
 mod tests {
@@ -154,6 +159,8 @@ mod tests {
             text_scale_percent: 130,
             ui_scale_percent: 110,
             word_wrap: false,
+            reduce_audio_while_listening: false,
+            audio_multiplier_percent: 30,
         };
         save_preferences_at(&settings, &preferences).expect("save settings");
         assert_eq!(load_preferences_at(&settings).unwrap(), preferences);
@@ -176,6 +183,14 @@ mod tests {
         assert_eq!(loaded.text_scale_percent, DEFAULT_TEXT_SCALE_PERCENT);
         assert_eq!(loaded.ui_scale_percent, DEFAULT_UI_SCALE_PERCENT);
         assert!(loaded.word_wrap);
+        assert_eq!(
+            loaded.reduce_audio_while_listening,
+            DEFAULT_REDUCE_AUDIO_WHILE_LISTENING
+        );
+        assert_eq!(
+            loaded.audio_multiplier_percent,
+            DEFAULT_AUDIO_MULTIPLIER_PERCENT
+        );
     }
 
     #[test]
@@ -184,7 +199,7 @@ mod tests {
         let settings = directory.path().join("settings.json");
         fs::write(
             &settings,
-            r#"{"text_scale_percent":999,"ui_scale_percent":1,"word_wrap":false}"#,
+            r#"{"text_scale_percent":999,"ui_scale_percent":1,"word_wrap":false,"audio_multiplier_percent":999}"#,
         )
         .unwrap();
 
@@ -192,5 +207,13 @@ mod tests {
         assert_eq!(loaded.text_scale_percent, MAX_TEXT_SCALE_PERCENT);
         assert_eq!(loaded.ui_scale_percent, MIN_UI_SCALE_PERCENT);
         assert!(!loaded.word_wrap);
+        assert_eq!(
+            loaded.reduce_audio_while_listening,
+            DEFAULT_REDUCE_AUDIO_WHILE_LISTENING
+        );
+        assert_eq!(
+            loaded.audio_multiplier_percent,
+            MAX_AUDIO_MULTIPLIER_PERCENT
+        );
     }
 }

@@ -8,6 +8,7 @@ use super::{
 
 use crate::edit::EditIntent;
 use crate::speech::SpeechEvent;
+use crate::system_audio::{AudioReductionAction, AudioReductionEvent};
 
 use iced::Task;
 use iced::widget::operation;
@@ -85,12 +86,14 @@ impl App {
                     trigger,
                     snapshot,
                     finish_requested: false,
+                    audio_reduction_requested: self.reduce_audio_while_listening,
                 });
                 self.partial_transcript.clear();
                 self.microphone_level = 0.0;
                 self.speech_state = UiState::Listening;
                 self.speech_status = "Speech: listening…".into();
                 self.set_notice(self.default_notice());
+                self.reduce_audio_for_recording(id);
             }
             Err(error) => {
                 self.speech_state = UiState::Error;
@@ -128,6 +131,10 @@ impl App {
         };
         active.finish_requested = true;
         let utterance_id = active.id;
+        let restore_audio = std::mem::take(&mut active.audio_reduction_requested);
+        if restore_audio {
+            self.restore_audio_after_recording(utterance_id);
+        }
 
         match self.speech.finish(utterance_id) {
             Ok(()) => {
@@ -192,6 +199,71 @@ impl App {
                 message,
             } => self.handle_speech_failed(utterance_id, message),
             SpeechEvent::Stopped => self.handle_speech_stopped(),
+        }
+    }
+
+    pub(super) fn handle_audio_reduction(&mut self, event: AudioReductionEvent) {
+        let AudioReductionEvent::Failed {
+            utterance_id,
+            action,
+            message,
+        } = event;
+        if action == AudioReductionAction::Reduce {
+            let recording_is_active = self
+                .active_utterance
+                .as_ref()
+                .is_some_and(|active| active.id == utterance_id && !active.finish_requested);
+            if !recording_is_active {
+                return;
+            }
+        }
+        match action {
+            AudioReductionAction::Reduce => self.set_notice(
+                Notice::new(
+                    NoticeSource::SystemAudio,
+                    UiState::Warning,
+                    "Other audio was not reduced",
+                    format!("{message} Recording continues and no document text was affected."),
+                )
+                .recovery(
+                    "Lower other audio manually, or turn off Reduce other audio in Settings.",
+                ),
+            ),
+            AudioReductionAction::Restore => self.set_notice(
+                Notice::new(
+                    NoticeSource::SystemAudio,
+                    UiState::Warning,
+                    "Other audio may still be reduced",
+                    format!("{message} The recording ended and no document text was affected."),
+                )
+                .recovery(
+                    "Restore speaker volume manually, then turn off Reduce other audio if this repeats.",
+                ),
+            ),
+        }
+    }
+
+    fn reduce_audio_for_recording(&mut self, utterance_id: u64) {
+        if self.reduce_audio_while_listening
+            && let Err(message) = self
+                .system_audio
+                .begin(utterance_id, self.audio_multiplier_percent)
+        {
+            self.handle_audio_reduction(AudioReductionEvent::Failed {
+                utterance_id,
+                action: AudioReductionAction::Reduce,
+                message,
+            });
+        }
+    }
+
+    pub(super) fn restore_audio_after_recording(&mut self, utterance_id: u64) {
+        if let Err(message) = self.system_audio.end(utterance_id) {
+            self.handle_audio_reduction(AudioReductionEvent::Failed {
+                utterance_id,
+                action: AudioReductionAction::Restore,
+                message,
+            });
         }
     }
 
@@ -363,6 +435,17 @@ impl App {
             return;
         }
 
+        let restore_audio = self
+            .active_utterance
+            .as_mut()
+            .filter(|active| active.audio_reduction_requested)
+            .map(|active| {
+                active.audio_reduction_requested = false;
+                active.id
+            });
+        if let Some(active_id) = restore_audio {
+            self.restore_audio_after_recording(active_id);
+        }
         let retained_partial = self.retain_partial_transcript();
         self.active_utterance = None;
         self.clear_speech_capture_state();
@@ -394,7 +477,13 @@ impl App {
 
     fn handle_speech_stopped(&mut self) {
         let preserve_failure = self.speech_state == UiState::Error;
-        let interrupted_recording = self.active_utterance.take().is_some();
+        let interrupted_recording = self.active_utterance.take();
+        if let Some(active) = &interrupted_recording
+            && active.audio_reduction_requested
+        {
+            self.restore_audio_after_recording(active.id);
+        }
+        let interrupted_recording = interrupted_recording.is_some();
         let retained_partial = self.retain_partial_transcript();
         self.clear_speech_capture_state();
         if interrupted_recording {

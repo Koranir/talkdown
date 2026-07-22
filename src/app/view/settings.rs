@@ -4,18 +4,23 @@ use super::{button_label, fixed_button_label, lucide_icon};
 use crate::app::presentation::compact_copy;
 use crate::app::ui;
 use crate::app::{
-    BODY_SIZE, CAPTION_SIZE, CodexModelChoice, DEFAULT_TEXT_SCALE_PERCENT,
-    DEFAULT_UI_SCALE_PERCENT, EDITOR_FONT, LEAD_SIZE, MAX_TEXT_SCALE_PERCENT, MAX_UI_SCALE_PERCENT,
-    MIN_TEXT_SCALE_PERCENT, MIN_UI_SCALE_PERCENT, Message, ModelSettingsView, SETTINGS_APPLY_ID,
-    SETTINGS_CANCEL_ID, SETTINGS_CHECKER_ID, SETTINGS_CODEX_MODEL_ID, SETTINGS_MODAL_ID,
-    SETTINGS_MODEL_CHOOSE_ID, SETTINGS_MODEL_DEFAULT_ID, SETTINGS_SCROLL_ID,
+    AUDIO_MULTIPLIER_STEP_PERCENT, BODY_SIZE, CAPTION_SIZE, CodexModelChoice,
+    DEFAULT_TEXT_SCALE_PERCENT, DEFAULT_UI_SCALE_PERCENT, EDITOR_FONT, LEAD_SIZE,
+    MAX_TEXT_SCALE_PERCENT, MAX_UI_SCALE_PERCENT, MIN_TEXT_SCALE_PERCENT, MIN_UI_SCALE_PERCENT,
+    Message, ModelSettingsView, SETTINGS_APPLY_ID, SETTINGS_AUDIO_MULTIPLIER_DOWN_ID,
+    SETTINGS_AUDIO_MULTIPLIER_UP_ID, SETTINGS_CANCEL_ID, SETTINGS_CHECKER_ID,
+    SETTINGS_CODEX_MODEL_ID, SETTINGS_MODAL_ID, SETTINGS_MODEL_CHOOSE_ID,
+    SETTINGS_MODEL_DEFAULT_ID, SETTINGS_REDUCE_AUDIO_ID, SETTINGS_SCROLL_ID,
     SETTINGS_TEXT_SCALE_DOWN_ID, SETTINGS_TEXT_SCALE_UP_ID, SETTINGS_UI_SCALE_DOWN_ID,
     SETTINGS_UI_SCALE_UP_ID, SETTINGS_WRAP_ID, SettingsDraft, TEXT_SCALE_STEP_PERCENT,
     UI_BOLD_FONT, UI_FONT, UI_SCALE_STEP_PERCENT, UI_SEMIBOLD_FONT,
 };
 use crate::checker::CheckingProvider;
 use crate::codex::CodexModel;
-use crate::model::ModelSource;
+use crate::model::{
+    DEFAULT_AUDIO_MULTIPLIER_PERCENT, MAX_AUDIO_MULTIPLIER_PERCENT, MIN_AUDIO_MULTIPLIER_PERCENT,
+    ModelSource,
+};
 
 use iced::widget::{
     button, column, container, opaque, pick_list, progress_bar, row, scrollable, space, text,
@@ -72,6 +77,8 @@ impl SettingsContent {
         let text_scale = editor_text_scale_preference(settings.text_scale_percent);
         let ui_scale = interface_scale_preference(settings.ui_scale_percent);
         let editor = word_wrap_preference(settings.word_wrap);
+        let reduce_audio = reduce_audio_preference(settings.reduce_audio_while_listening);
+        let audio_multiplier = audio_multiplier_preference(settings.audio_multiplier_percent);
         let checker = checker_preference(settings.checking_provider);
         let codex = CodexModelPreference::compose(&settings, &codex_models);
         let apply_state = SettingsApplyState::capture(&model_view, codex.available);
@@ -89,6 +96,8 @@ impl SettingsContent {
                 checker,
                 codex.preference,
                 settings_section_label("SPEECH"),
+                reduce_audio,
+                audio_multiplier,
                 speech_model,
             ]
             .spacing(10),
@@ -224,6 +233,53 @@ fn word_wrap_preference(enabled: bool) -> Element<'static, Message> {
     .id(SETTINGS_WRAP_ID);
 
     settings_preference("Word wrap", "Visual only; file unchanged", control)
+}
+
+fn reduce_audio_preference(enabled: bool) -> Element<'static, Message> {
+    let control = container(
+        button(fixed_button_label(
+            if enabled { "ON" } else { "OFF" },
+            EDITOR_FONT,
+            CAPTION_SIZE,
+        ))
+        .width(72)
+        .height(34)
+        .padding([7, 12])
+        .style(move |theme, status| {
+            if enabled {
+                ui::primary_button(theme, status)
+            } else {
+                ui::quiet_button(theme, status)
+            }
+        })
+        .on_press(Message::SettingsToggleReduceAudio),
+    )
+    .id(SETTINGS_REDUCE_AUDIO_ID);
+
+    settings_preference(
+        "Reduce other audio",
+        "While listening · restores after recording",
+        control,
+    )
+}
+
+fn audio_multiplier_preference(value: u16) -> Element<'static, Message> {
+    let controls = settings_scale_controls(SettingsScaleControl {
+        value,
+        minimum: MIN_AUDIO_MULTIPLIER_PERCENT,
+        maximum: MAX_AUDIO_MULTIPLIER_PERCENT,
+        default: DEFAULT_AUDIO_MULTIPLIER_PERCENT,
+        step: AUDIO_MULTIPLIER_STEP_PERCENT,
+        down_id: SETTINGS_AUDIO_MULTIPLIER_DOWN_ID,
+        up_id: SETTINGS_AUDIO_MULTIPLIER_UP_ID,
+        adjust: Message::SettingsAdjustAudioMultiplier,
+    });
+
+    settings_preference(
+        "Listening volume",
+        "Current speaker level × 0–100%",
+        controls,
+    )
 }
 
 fn checker_preference(provider: CheckingProvider) -> Element<'static, Message> {

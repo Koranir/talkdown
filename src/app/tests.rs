@@ -46,6 +46,75 @@ fn test_app(text: &str) -> (App, SpeechTestDriver, CodexTestDriver) {
     (app, speech_driver, codex_driver)
 }
 
+#[test]
+fn recording_reduces_other_audio_and_restores_it_on_release() {
+    let (mut app, speech, _codex) = test_app("Safe text");
+    app.audio_multiplier_percent = 25;
+
+    app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
+    let (utterance_id, _) = speech.expect_begin(Duration::from_millis(50));
+    assert_eq!(
+        app.system_audio.expect_begin(Duration::from_millis(50)),
+        (utterance_id, 25)
+    );
+
+    app.system_audio.emit(AudioReductionEvent::Failed {
+        utterance_id,
+        action: crate::system_audio::AudioReductionAction::Reduce,
+        message: "No compatible audio control was found.".into(),
+    });
+    app.drain_workers();
+    assert_eq!(app.notice.title, "Other audio was not reduced");
+    assert_eq!(app.notice.source, NoticeSource::SystemAudio);
+    assert!(
+        app.active_utterance
+            .as_ref()
+            .is_some_and(|active| active.id == utterance_id)
+    );
+
+    app.release_speech(SpeechTrigger::Space);
+    assert_eq!(
+        speech.expect_finish(Duration::from_millis(50)),
+        utterance_id
+    );
+    assert_eq!(
+        app.system_audio.expect_end(Duration::from_millis(50)),
+        utterance_id
+    );
+
+    app.system_audio.emit(AudioReductionEvent::Failed {
+        utterance_id,
+        action: crate::system_audio::AudioReductionAction::Restore,
+        message: "The previous speaker level could not be restored.".into(),
+    });
+    app.drain_workers();
+    assert_eq!(app.notice.title, "Other audio may still be reduced");
+    assert_eq!(app.notice.source, NoticeSource::SystemAudio);
+    assert!(
+        app.notice
+            .recovery
+            .as_deref()
+            .is_some_and(|copy| copy.contains("Restore speaker volume"))
+    );
+}
+
+#[test]
+fn disabled_audio_reduction_leaves_system_audio_untouched() {
+    let (mut app, speech, _codex) = test_app("Safe text");
+    app.reduce_audio_while_listening = false;
+
+    app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
+    let (utterance_id, _) = speech.expect_begin(Duration::from_millis(50));
+    assert!(!app.system_audio.has_pending_command());
+
+    app.release_speech(SpeechTrigger::Space);
+    assert_eq!(
+        speech.expect_finish(Duration::from_millis(50)),
+        utterance_id
+    );
+    assert!(!app.system_audio.has_pending_command());
+}
+
 fn tiny_skia_simulator(app: &App, size: (f32, f32)) -> Simulator<'_, Message> {
     let settings = Settings {
         default_font: UI_FONT,
@@ -648,8 +717,13 @@ fn applying_deferred_result_keeps_new_codex_request_working() {
 
     app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
     let (first_utterance, _) = speech.expect_begin(timeout);
+    assert_eq!(
+        app.system_audio.expect_begin(timeout),
+        (first_utterance, model::DEFAULT_AUDIO_MULTIPLIER_PERCENT)
+    );
     app.release_speech(SpeechTrigger::Space);
     assert_eq!(speech.expect_finish(timeout), first_utterance);
+    assert_eq!(app.system_audio.expect_end(timeout), first_utterance);
     speech.emit(SpeechEvent::Final {
         utterance_id: first_utterance,
         text: "first".into(),
@@ -703,8 +777,13 @@ fn replacing_document_clears_capture_but_tracks_discarded_codex_work() {
 
     app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
     let (first_utterance, _) = speech.expect_begin(timeout);
+    assert_eq!(
+        app.system_audio.expect_begin(timeout),
+        (first_utterance, model::DEFAULT_AUDIO_MULTIPLIER_PERCENT)
+    );
     app.release_speech(SpeechTrigger::Space);
     assert_eq!(speech.expect_finish(timeout), first_utterance);
+    assert_eq!(app.system_audio.expect_end(timeout), first_utterance);
     speech.emit(SpeechEvent::Final {
         utterance_id: first_utterance,
         text: "old document".into(),
@@ -714,6 +793,10 @@ fn replacing_document_clears_capture_but_tracks_discarded_codex_work() {
 
     app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
     let (active_utterance, _) = speech.expect_begin(timeout);
+    assert_eq!(
+        app.system_audio.expect_begin(timeout),
+        (active_utterance, model::DEFAULT_AUDIO_MULTIPLIER_PERCENT)
+    );
     speech.emit(SpeechEvent::Partial {
         utterance_id: active_utterance,
         text: "discard this recording".into(),
@@ -728,6 +811,7 @@ fn replacing_document_clears_capture_but_tracks_discarded_codex_work() {
     // bookkeeping long enough to reject the old result by generation.
     app.editor_scroll_y = app.editor_line_height() * 4.0;
     app.replace_document("Replacement document");
+    assert_eq!(app.system_audio.expect_end(timeout), active_utterance);
     app.set_notice(Notice::new(
         NoticeSource::File,
         UiState::Success,
@@ -1149,9 +1233,19 @@ fn presentation_copy_is_bounded_and_file_failures_keep_priority() {
     // recovery failure, not routine mode guidance.
     let (mut disconnected, speech, _codex) = test_app("");
     disconnected.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
-    let _ = speech.expect_begin(Duration::from_secs(1));
+    let (utterance_id, _) = speech.expect_begin(Duration::from_secs(1));
+    assert_eq!(
+        disconnected
+            .system_audio
+            .expect_begin(Duration::from_secs(1)),
+        (utterance_id, model::DEFAULT_AUDIO_MULTIPLIER_PERCENT)
+    );
     drop(speech);
     let _ = disconnected.escape();
+    assert_eq!(
+        disconnected.system_audio.expect_end(Duration::from_secs(1)),
+        utterance_id
+    );
     assert!(disconnected.active_utterance.is_none());
     assert_eq!(disconnected.speech_state, UiState::Offline);
     assert_eq!(disconnected.notice.state, UiState::Error);
@@ -1264,6 +1358,8 @@ fn iced_settings_window_snapshot() -> Result<(), Error> {
         text_scale_percent: 130,
         ui_scale_percent: 110,
         word_wrap: false,
+        reduce_audio_while_listening: true,
+        audio_multiplier_percent: 30,
         speech_model_path: Some(PathBuf::from("tests/fixtures/mock-ggml-model.bin")),
         checking_provider: CheckingProvider::Harper,
         codex_model: Some("gpt-5.3-codex".into()),
@@ -1276,6 +1372,9 @@ fn iced_settings_window_snapshot() -> Result<(), Error> {
     let _ = ui.find(id(SETTINGS_UI_SCALE_DOWN_ID))?;
     let _ = ui.find(id(SETTINGS_UI_SCALE_UP_ID))?;
     let _ = ui.find(id(SETTINGS_WRAP_ID))?;
+    let _ = ui.find(id(SETTINGS_REDUCE_AUDIO_ID))?;
+    let _ = ui.find(id(SETTINGS_AUDIO_MULTIPLIER_DOWN_ID))?;
+    let _ = ui.find(id(SETTINGS_AUDIO_MULTIPLIER_UP_ID))?;
     let _ = ui.find(id(SETTINGS_CANCEL_ID))?;
     let _ = ui.find(id(SETTINGS_APPLY_ID))?;
     assert_button_label_centered(&mut ui, SETTINGS_WRAP_ID, "OFF")?;
@@ -1324,6 +1423,8 @@ fn iced_model_download_window_snapshot() -> Result<(), Error> {
         text_scale_percent: DEFAULT_TEXT_SCALE_PERCENT,
         ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
         word_wrap: true,
+        reduce_audio_while_listening: true,
+        audio_multiplier_percent: model::DEFAULT_AUDIO_MULTIPLIER_PERCENT,
         speech_model_path: None,
         checking_provider: CheckingProvider::Codex,
         codex_model: None,
@@ -1765,6 +1866,8 @@ fn text_and_interface_zoom_shortcuts_are_scoped_and_bounded() -> Result<(), Erro
 #[test]
 fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Error> {
     assert!(Message::SettingsToggleWordWrap.is_allowed_during_settings());
+    assert!(Message::SettingsToggleReduceAudio.is_allowed_during_settings());
+    assert!(Message::SettingsAdjustAudioMultiplier(-10).is_allowed_during_settings());
     assert!(Message::RefreshNormalCursor.is_allowed_during_settings());
     assert!(!Message::EnterInsert.is_allowed_during_settings());
 
@@ -1787,6 +1890,8 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
             text_scale_percent: DEFAULT_TEXT_SCALE_PERCENT,
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
             word_wrap: true,
+            reduce_audio_while_listening: true,
+            audio_multiplier_percent: model::DEFAULT_AUDIO_MULTIPLIER_PERCENT,
             speech_model_path: None,
             checking_provider: CheckingProvider::Codex,
             codex_model: None,
@@ -1800,23 +1905,34 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
         let _ = ui.click(id(SETTINGS_TEXT_SCALE_UP_ID))?;
         let _ = ui.click(id(SETTINGS_UI_SCALE_UP_ID))?;
         let _ = ui.click(id(SETTINGS_WRAP_ID))?;
+        let _ = ui.click(id(SETTINGS_REDUCE_AUDIO_ID))?;
         ui.into_messages().collect::<Vec<_>>()
     };
     for message in staged_messages {
         let _ = app.update(message);
     }
+    let _ = app.update(Message::SettingsAdjustAudioMultiplier(
+        -AUDIO_MULTIPLIER_STEP_PERCENT,
+    ));
 
     // Pointer changes mutate only the draft, never presentation or document
     // state beneath the opaque settings layer.
     assert_eq!(app.text_scale_percent, DEFAULT_TEXT_SCALE_PERCENT);
     assert_eq!(app.ui_scale_percent, DEFAULT_UI_SCALE_PERCENT);
     assert!(app.word_wrap);
+    assert!(app.reduce_audio_while_listening);
+    assert_eq!(
+        app.audio_multiplier_percent,
+        model::DEFAULT_AUDIO_MULTIPLIER_PERCENT
+    );
     assert_eq!(
         app.settings,
         Some(SettingsDraft {
             text_scale_percent: 110,
             ui_scale_percent: 110,
             word_wrap: false,
+            reduce_audio_while_listening: false,
+            audio_multiplier_percent: 10,
             speech_model_path: None,
             checking_provider: CheckingProvider::Codex,
             codex_model: None,
@@ -1844,6 +1960,8 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
     assert_eq!(app.text_scale_percent, 110);
     assert_eq!(app.ui_scale_percent, 110);
     assert!(!app.word_wrap);
+    assert!(!app.reduce_audio_while_listening);
+    assert_eq!(app.audio_multiplier_percent, 10);
     assert_eq!(app.document.text(), original_text);
     let saved = app
         .test_saved_preferences
@@ -1852,6 +1970,8 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
     assert_eq!(saved.text_scale_percent, 110);
     assert_eq!(saved.ui_scale_percent, 110);
     assert!(!saved.word_wrap);
+    assert!(!saved.reduce_audio_while_listening);
+    assert_eq!(saved.audio_multiplier_percent, 10);
     assert_eq!(saved.checking_provider, CheckingProvider::Codex);
 
     // Modal keyboard bindings stage changes, and Escape discards them.
@@ -1906,11 +2026,15 @@ fn presentation_preferences_restore_into_application_state() {
         text_scale_percent: 140,
         ui_scale_percent: 120,
         word_wrap: false,
+        reduce_audio_while_listening: false,
+        audio_multiplier_percent: 40,
     });
 
     assert_eq!(app.text_scale_percent, 140);
     assert_eq!(app.ui_scale_percent, 120);
     assert!(!app.word_wrap);
+    assert!(!app.reduce_audio_while_listening);
+    assert_eq!(app.audio_multiplier_percent, 40);
     assert_eq!(app.checking_provider, CheckingProvider::Harper);
     assert_eq!(app.codex_model.as_deref(), Some("gpt-restored"));
     assert_eq!(app.speech_model_path, None);
@@ -2232,7 +2356,7 @@ fn settings_stage_checker_and_advertised_codex_model() -> Result<(), Error> {
 #[test]
 fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), Error> {
     let (mut app, _speech, _codex) = test_app("Safe text");
-    assert_eq!(app.subscription().units(), 5);
+    assert_eq!(app.subscription().units(), 6);
     let _ = app.update(Message::OpenSettings);
 
     let (download, driver) = DefaultModelDownload::intercepted();
@@ -2242,7 +2366,7 @@ fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), 
         total: model::DEFAULT_MODEL_BYTES,
         cancelling: false,
     });
-    assert_eq!(app.subscription().units(), 6);
+    assert_eq!(app.subscription().units(), 7);
     let active_download_id = app
         .model_download
         .as_ref()
