@@ -113,8 +113,9 @@ the existing output level, multiplies it by the staged 0–100% listening-volume
 setting, and restores it only when
 the current level still matches the value Talkdown set, so a user adjustment
 during recording wins. On Linux it tries PipeWire `wpctl`, then
-Pulse-compatible `pactl`; on
-macOS it uses the system output-volume control. Worker shutdown also restores
+Pulse-compatible `pactl`; on macOS it uses the system output-volume control;
+and on Windows it uses Core Audio's default multimedia render endpoint and
+master-volume scalar. Worker shutdown also restores
 an active snapshot. Unsupported or failed control is a typed warning and never
 blocks recording or changes document text.
 

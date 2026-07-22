@@ -144,14 +144,15 @@ cancels. Keep the committed values separate from
 pending Codex edit to finish before opening, so changing its model cannot strand
 an in-flight edit.
 
-“Reduce other audio” defaults on for Linux and macOS. “Listening volume”
-defaults to 20% and multiplies the speaker level captured at the start of each
+“Reduce other audio” defaults on for Linux, macOS, and Windows. “Listening volume”
+defaults to 30% and multiplies the speaker level captured at the start of each
 recording; for example, 60% × 25% becomes 15%, while 100% is a no-op. Talkdown starts the system-audio action only
 after Speech accepts microphone capture and restores it as soon as recording
 ends; Whisper finalization does not keep speakers reduced. The work runs on a
 dedicated serialized worker, never the UI or CPAL callback. Linux lowers
 the default PipeWire/Pulse-compatible sink with `wpctl` or `pactl`. macOS lowers
-the system output volume.
+the system output volume. Windows uses Core Audio to lower the master volume of
+the default multimedia render endpoint.
 Talkdown restores only the exact level it set, preserving a volume adjustment
 made by the user during recording. Other platforms report a non-destructive
 warning; turn the setting off there if no supported system control is available.

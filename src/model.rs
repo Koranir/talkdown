@@ -69,9 +69,12 @@ pub const MAX_TEXT_SCALE_PERCENT: u16 = 200;
 pub const DEFAULT_UI_SCALE_PERCENT: u16 = 100;
 pub const MIN_UI_SCALE_PERCENT: u16 = 80;
 pub const MAX_UI_SCALE_PERCENT: u16 = 140;
-pub const DEFAULT_REDUCE_AUDIO_WHILE_LISTENING: bool =
-    cfg!(any(target_os = "linux", target_os = "macos"));
-pub const DEFAULT_AUDIO_MULTIPLIER_PERCENT: u16 = 20;
+pub const DEFAULT_REDUCE_AUDIO_WHILE_LISTENING: bool = cfg!(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+));
+pub const DEFAULT_AUDIO_MULTIPLIER_PERCENT: u16 = 30;
 pub const MIN_AUDIO_MULTIPLIER_PERCENT: u16 = 0;
 pub const MAX_AUDIO_MULTIPLIER_PERCENT: u16 = 100;
 

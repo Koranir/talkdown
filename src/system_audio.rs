@@ -1,6 +1,6 @@
 //! Best-effort system-audio reduction while the microphone is recording.
 //!
-//! Platform commands run on a dedicated worker. The UI and CPAL callback only
+//! Platform controls run on a dedicated worker. The UI and CPAL callback only
 //! enqueue begin/end commands, and the worker serializes them so even a very
 //! short recording is restored after an in-flight reduction completes.
 
@@ -11,8 +11,23 @@ use crate::event_stream::{EventSender, EventStream, unbounded as event_channel};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use iced::Subscription;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Output};
 use std::thread;
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+#[cfg(target_os = "windows")]
+use windows::Win32::Media::Audio::{IMMDeviceEnumerator, MMDeviceEnumerator, eMultimedia, eRender};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::{
+    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+};
+#[cfg(target_os = "windows")]
+use windows::core::GUID;
+
+#[cfg(target_os = "windows")]
+const TALKDOWN_VOLUME_EVENT_CONTEXT: GUID = GUID::from_u128(0x4f02474f_c42b_4de0_8d65_075288d77990);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioReductionAction {
@@ -161,6 +176,8 @@ impl Drop for SystemAudioBridge {
 
 fn run_worker(commands: Receiver<AudioReductionCommand>, events: EventSender<AudioReductionEvent>) {
     let mut active: Option<(u64, RestoreState)> = None;
+    #[cfg(target_os = "windows")]
+    let com_apartment = ComApartment::initialize();
 
     while let Ok(command) = commands.recv() {
         match command {
@@ -174,7 +191,15 @@ fn run_worker(commands: Receiver<AudioReductionCommand>, events: EventSender<Aud
                     report_failure(&events, previous_id, AudioReductionAction::Restore, message);
                 }
 
-                match reduce_audio(multiplier_percent) {
+                #[cfg(target_os = "windows")]
+                let reduction = match &com_apartment {
+                    Ok(_) => reduce_audio(multiplier_percent),
+                    Err(message) => Err(message.clone()),
+                };
+                #[cfg(not(target_os = "windows"))]
+                let reduction = reduce_audio(multiplier_percent);
+
+                match reduction {
                     Ok(Some(restore)) => active = Some((utterance_id, restore)),
                     Ok(None) => {}
                     Err(message) => {
@@ -239,6 +264,35 @@ enum RestoreState {
     },
     #[cfg(target_os = "macos")]
     MacOs { original: u32, reduced: u32 },
+    #[cfg(target_os = "windows")]
+    Windows {
+        endpoint: IAudioEndpointVolume,
+        original: f32,
+        reduced: f32,
+    },
+}
+
+#[cfg(target_os = "windows")]
+struct ComApartment;
+
+#[cfg(target_os = "windows")]
+impl ComApartment {
+    fn initialize() -> Result<Self, String> {
+        // The system-audio worker owns every Core Audio COM interface for its
+        // complete lifetime, so no interface pointer crosses an apartment.
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+            .ok()
+            .map(|()| Self)
+            .map_err(|error| format!("Windows Core Audio initialization failed: {error}"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        // Balances the successful CoInitializeEx on this same worker thread.
+        unsafe { CoUninitialize() };
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -291,7 +345,7 @@ fn reduce_with_wpctl(multiplier_percent: u16) -> Result<Option<RestoreState>, St
     }
     let original = parse_wpctl_volume(&text)
         .ok_or_else(|| "wpctl returned an unreadable speaker volume".to_owned())?;
-    let reduced = original * f32::from(multiplier_percent) / 100.0;
+    let reduced = multiply_scalar(original, multiplier_percent);
     if approximately_equal(original, reduced) {
         return Ok(None);
     }
@@ -364,7 +418,7 @@ fn set_pactl_volumes(volumes: &[u32]) -> Result<(), String> {
     run_status("pactl", arguments)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn approximately_equal(left: f32, right: f32) -> bool {
     (left - right).abs() < 0.005
 }
@@ -409,7 +463,69 @@ fn osascript(script: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "windows")]
+fn reduce_audio(multiplier_percent: u16) -> Result<Option<RestoreState>, String> {
+    if multiplier_percent >= 100 {
+        return Ok(None);
+    }
+
+    let endpoint = windows_default_master_endpoint()?;
+    let muted = unsafe { endpoint.GetMute() }
+        .map_err(|error| format!("Windows could not read the master mute state: {error}"))?;
+    if muted.as_bool() {
+        return Ok(None);
+    }
+
+    let original = windows_master_volume(&endpoint)?;
+    let reduced = multiply_scalar(original, multiplier_percent);
+    if approximately_equal(original, reduced) {
+        return Ok(None);
+    }
+
+    unsafe { endpoint.SetMasterVolumeLevelScalar(reduced, &TALKDOWN_VOLUME_EVENT_CONTEXT) }
+        .map_err(|error| format!("Windows could not reduce the master volume: {error}"))?;
+
+    Ok(Some(RestoreState::Windows {
+        endpoint,
+        original,
+        reduced,
+    }))
+}
+
+#[cfg(target_os = "windows")]
+fn restore_audio(state: RestoreState) -> Result<(), String> {
+    let RestoreState::Windows {
+        endpoint,
+        original,
+        reduced,
+    } = state;
+    let current = windows_master_volume(&endpoint)?;
+    if approximately_equal(current, reduced) {
+        unsafe { endpoint.SetMasterVolumeLevelScalar(original, &TALKDOWN_VOLUME_EVENT_CONTEXT) }
+            .map_err(|error| format!("Windows could not restore the master volume: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_default_master_endpoint() -> Result<IAudioEndpointVolume, String> {
+    let enumerator: IMMDeviceEnumerator = unsafe {
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+    }
+    .map_err(|error| format!("Windows could not open the audio device enumerator: {error}"))?;
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }
+        .map_err(|error| format!("Windows has no available default multimedia output: {error}"))?;
+    unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|error| format!("Windows could not open the master endpoint volume: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_master_volume(endpoint: &IAudioEndpointVolume) -> Result<f32, String> {
+    unsafe { endpoint.GetMasterVolumeLevelScalar() }
+        .map_err(|error| format!("Windows could not read the master volume: {error}"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn reduce_audio(multiplier_percent: u16) -> Result<Option<RestoreState>, String> {
     if multiplier_percent >= 100 {
         return Ok(None);
@@ -417,11 +533,12 @@ fn reduce_audio(multiplier_percent: u16) -> Result<Option<RestoreState>, String>
     Err("Automatic speaker reduction is not supported on this operating system.".into())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn restore_audio(_state: RestoreState) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_output<I, S>(program: &str, arguments: I) -> Result<Output, String>
 where
     I: IntoIterator<Item = S>,
@@ -438,6 +555,7 @@ where
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_status<I, S>(program: &str, arguments: I) -> Result<(), String>
 where
     I: IntoIterator<Item = S>,
@@ -446,8 +564,14 @@ where
     run_output(program, arguments).map(|_| ())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn multiply_percent(value: u32, multiplier_percent: u16) -> u32 {
     (value * u32::from(multiplier_percent) + 50) / 100
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn multiply_scalar(value: f32, multiplier_percent: u16) -> f32 {
+    value * f32::from(multiplier_percent) / 100.0
 }
 
 #[cfg(test)]
@@ -466,5 +590,6 @@ mod tests {
         );
         assert_eq!(multiply_percent(60, 25), 15);
         assert_eq!(multiply_percent(75, 20), 15);
+        assert!((multiply_scalar(0.6, 25) - 0.15).abs() < f32::EPSILON);
     }
 }
