@@ -1,12 +1,13 @@
 //! Trusted editor transactions, presentation shortcuts, and editor focus maintenance.
 
-use super::input::RefreshFocusedEditor;
+use super::input::{ReadEditorScroll, RefreshFocusedEditor};
 use super::{
-    App, EDITOR_ID, MAX_TEXT_SCALE_PERCENT, MAX_UI_SCALE_PERCENT, MIN_TEXT_SCALE_PERCENT,
-    MIN_UI_SCALE_PERCENT, MIN_WINDOW_SIZE, Message, Mode, Notice, NoticeSource, UiState,
+    App, EDITOR_ID, EDITOR_SCROLL_ID, EditorScrollMetrics, MAX_TEXT_SCALE_PERCENT,
+    MAX_UI_SCALE_PERCENT, MIN_TEXT_SCALE_PERCENT, MIN_UI_SCALE_PERCENT, MIN_WINDOW_SIZE, Message,
+    Mode, Notice, NoticeSource, UiState,
 };
 
-use iced::widget::{operation, text_editor};
+use iced::widget::{operation, scrollable, text_editor};
 use iced::{Size, Task, window};
 
 pub(super) fn minimum_window_resize(current: Size) -> Option<Size> {
@@ -19,6 +20,29 @@ pub(super) fn minimum_window_resize(current: Size) -> Option<Size> {
 }
 
 impl App {
+    pub(super) fn editor_line_height(&self) -> f32 {
+        self.editor_text_size() * 1.5
+    }
+
+    fn read_editor_scroll(&self, follow_cursor: bool) -> Task<Message> {
+        iced::advanced::widget::operate(ReadEditorScroll::new()).map(move |metrics| {
+            Message::EditorScrollMetrics {
+                metrics,
+                follow_cursor,
+            }
+        })
+    }
+
+    pub(super) fn sync_editor_scroll(&self) -> Task<Message> {
+        operation::scroll_to(
+            EDITOR_SCROLL_ID,
+            scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(self.editor_scroll_y),
+            },
+        )
+    }
+
     fn scale_window_task(&self) -> Task<Message> {
         window::latest().and_then(|window| {
             let resize_if_needed = window::size(window).then(move |current| {
@@ -40,10 +64,72 @@ impl App {
     }
 
     pub(super) fn perform_editor_action(&mut self, action: text_editor::Action) -> Task<Message> {
+        let scroll_lines = match action {
+            text_editor::Action::Scroll { lines } => Some(lines),
+            _ => None,
+        };
         if self.document.perform(action, self.mode == Mode::Insert) {
             self.set_transient_notice(self.default_notice());
         }
-        Task::none()
+
+        if let Some(lines) = scroll_lines {
+            self.editor_scroll_y =
+                (self.editor_scroll_y + lines as f32 * self.editor_line_height()).max(0.0);
+            self.read_editor_scroll(false)
+        } else {
+            self.read_editor_scroll(true)
+        }
+    }
+
+    pub(super) fn scroll_editor_from_scrollbar(
+        &mut self,
+        viewport: scrollable::Viewport,
+    ) -> Task<Message> {
+        let line_height = self.editor_line_height();
+        let target_y = viewport.absolute_offset().y;
+        let maximum_y = (viewport.content_bounds().height - viewport.bounds().height).max(0.0);
+        let current_line = (self.editor_scroll_y / line_height).round() as i32;
+        let target_line = (target_y.clamp(0.0, maximum_y) / line_height).round() as i32;
+        let delta = target_line - current_line;
+
+        if delta != 0 {
+            let _ = self
+                .document
+                .perform(text_editor::Action::Scroll { lines: delta }, false);
+        }
+
+        self.editor_scroll_y = (target_line as f32 * line_height).clamp(0.0, maximum_y);
+        self.sync_editor_scroll()
+    }
+
+    pub(super) fn update_editor_scroll_metrics(
+        &mut self,
+        metrics: EditorScrollMetrics,
+        follow_cursor: bool,
+    ) -> Task<Message> {
+        let line_height = self.editor_line_height();
+        let maximum_y = (metrics.content_height - metrics.viewport_height).max(0.0);
+        let mut offset_y = self.editor_scroll_y.clamp(0.0, maximum_y);
+
+        if follow_cursor {
+            let cursor_bottom = (metrics.cursor_top + metrics.cursor_height)
+                .clamp(line_height, metrics.content_height);
+            let cursor_top = (cursor_bottom - line_height).max(0.0);
+
+            if cursor_top < offset_y {
+                offset_y = cursor_top;
+            } else if cursor_bottom > offset_y + metrics.viewport_height {
+                offset_y = cursor_bottom - metrics.viewport_height;
+            }
+        }
+
+        self.editor_scroll_y = offset_y.clamp(0.0, maximum_y);
+
+        if (metrics.offset_y - self.editor_scroll_y).abs() <= 0.5 {
+            Task::none()
+        } else {
+            self.sync_editor_scroll()
+        }
     }
 
     pub(super) fn open_line_above(&mut self) -> Task<Message> {
@@ -92,6 +178,7 @@ impl App {
 
     pub(super) fn undo_document(&mut self) -> Task<Message> {
         if self.document.undo() {
+            self.editor_scroll_y = 0.0;
             self.set_transient_notice(Notice::new(
                 NoticeSource::Editor,
                 UiState::Info,
@@ -99,11 +186,12 @@ impl App {
                 "Redo is available from the normal-mode shortcut.",
             ));
         }
-        Task::none()
+        self.read_editor_scroll(true)
     }
 
     pub(super) fn redo_document(&mut self) -> Task<Message> {
         if self.document.redo() {
+            self.editor_scroll_y = 0.0;
             self.set_transient_notice(Notice::new(
                 NoticeSource::Editor,
                 UiState::Info,
@@ -111,7 +199,7 @@ impl App {
                 "The restored change is now active.",
             ));
         }
-        Task::none()
+        self.read_editor_scroll(true)
     }
 
     pub(super) fn adjust_text_scale(&mut self, delta: i16) -> Task<Message> {

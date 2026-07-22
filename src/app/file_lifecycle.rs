@@ -54,7 +54,7 @@ impl App {
                 .recovery("The current document is unchanged. Check access and try again."),
             ),
         }
-        operation::focus(EDITOR_ID)
+        Task::batch([operation::focus(EDITOR_ID), self.sync_editor_scroll()])
     }
 
     fn accept_opened_file(&mut self, path: PathBuf, contents: String) {
@@ -187,7 +187,7 @@ impl App {
             "Unsaved changes kept",
             "The current document remains open and unchanged.",
         ));
-        operation::focus(EDITOR_ID)
+        Task::batch([operation::focus(EDITOR_ID), self.sync_editor_scroll()])
     }
 
     pub(super) fn request_new_file(&mut self) -> Task<Message> {
@@ -210,7 +210,7 @@ impl App {
             "New buffer ready",
             "Start dictating or enter Insert mode to type.",
         ));
-        operation::focus(EDITOR_ID)
+        Task::batch([operation::focus(EDITOR_ID), self.sync_editor_scroll()])
     }
 
     pub(super) fn confirm_discard(&mut self) -> Task<Message> {
@@ -450,7 +450,7 @@ impl App {
                     "Reloaded from disk",
                     "The file changed outside Talkdown, so the clean editor buffer was refreshed.",
                 ));
-                operation::focus(EDITOR_ID)
+                Task::batch([operation::focus(EDITOR_ID), self.sync_editor_scroll()])
             }
             FileObservation::Missing => {
                 self.set_notice(
@@ -498,7 +498,11 @@ impl App {
             "Reloaded from disk",
             "The external file version replaced the unsaved editor buffer as requested.",
         ));
-        Task::batch([operation::focus(EDITOR_ID), self.check_queued_file_change()])
+        Task::batch([
+            operation::focus(EDITOR_ID),
+            self.sync_editor_scroll(),
+            self.check_queued_file_change(),
+        ])
     }
 
     fn invalidate_file_checks(&mut self) {
@@ -574,5 +578,6 @@ impl App {
         self.last_harper_audit = None;
         self.refresh_checker_status();
         self.document.reset(text);
+        self.editor_scroll_y = 0.0;
     }
 }

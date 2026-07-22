@@ -59,6 +59,8 @@ use crate::edit::Anchor;
 use crate::model::DownloadError;
 
 const EDITOR_ID: &str = "talkdown-editor";
+const EDITOR_SCROLL_ID: &str = "talkdown-editor-scroll";
+const EDITOR_CURSOR_PROBE_ID: &str = "talkdown-editor-cursor-probe";
 const COMMAND_ID: &str = "talkdown-command";
 const MODE_PILL_ID: &str = "talkdown-mode-pill";
 const NEW_BUTTON_ID: &str = "talkdown-new-button";
@@ -342,6 +344,11 @@ enum Message {
     DeleteBackwardAndEnterInsert,
     Undo,
     Redo,
+    EditorScrollbarScrolled(iced::widget::scrollable::Viewport),
+    EditorScrollMetrics {
+        metrics: EditorScrollMetrics,
+        follow_cursor: bool,
+    },
 
     // File requests and asynchronous results.
     NewFile,
@@ -433,6 +440,8 @@ impl Message {
             self,
             Self::RefreshNormalCursor
                 | Self::WindowFocusChanged(_)
+                | Self::EditorScrollbarScrolled(_)
+                | Self::EditorScrollMetrics { .. }
                 | Self::SpeechWorkerEvent(_, _)
                 | Self::CodexWorkerEvent(_, _)
                 | Self::ModelDownloadEvent(_, _)
@@ -567,6 +576,15 @@ struct ExternalFileChange {
     contents: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EditorScrollMetrics {
+    offset_y: f32,
+    viewport_height: f32,
+    content_height: f32,
+    cursor_top: f32,
+    cursor_height: f32,
+}
+
 impl DiscardAction {
     fn button_label(self) -> &'static str {
         match self {
@@ -595,6 +613,7 @@ struct App {
     word_wrap: bool,
     text_scale_percent: u16,
     ui_scale_percent: u16,
+    editor_scroll_y: f32,
 
     // Committed service choices and local-checker audit presentation.
     speech_model_path: Option<PathBuf>,
@@ -704,7 +723,11 @@ impl App {
         app.restore_preferences(preferences);
         app.model_download_error = initial_model.warning;
 
-        (app, operation::focus(EDITOR_ID))
+        let initial_scroll = app.sync_editor_scroll();
+        (
+            app,
+            Task::batch([operation::focus(EDITOR_ID), initial_scroll]),
+        )
     }
 
     fn from_parts(
@@ -732,6 +755,7 @@ impl App {
             word_wrap: true,
             text_scale_percent: DEFAULT_TEXT_SCALE_PERCENT,
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
+            editor_scroll_y: 0.0,
             speech_model_path: None,
             speech_model_source: ModelSource::Unset,
             checking_provider: CheckingProvider::default(),
@@ -913,6 +937,13 @@ impl App {
             Message::DeleteBackwardAndEnterInsert => self.delete_backward_and_enter_insert(),
             Message::Undo => self.undo_document(),
             Message::Redo => self.redo_document(),
+            Message::EditorScrollbarScrolled(viewport) => {
+                self.scroll_editor_from_scrollbar(viewport)
+            }
+            Message::EditorScrollMetrics {
+                metrics,
+                follow_cursor,
+            } => self.update_editor_scroll_metrics(metrics, follow_cursor),
             Message::AdjustTextScale(delta) => self.adjust_text_scale(delta),
             Message::AdjustUiScale(delta) => self.adjust_ui_scale(delta),
 

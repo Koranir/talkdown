@@ -7,10 +7,11 @@ mod settings;
 use super::input::editor_binding;
 use super::presentation::{compact_copy, compact_tail_copy};
 use super::{
-    App, BODY_SIZE, CAPTION_SIZE, CHECKER_PILL_ID, CODEX_PILL_ID, COMMAND_ID, EDITOR_FONT,
-    EDITOR_ID, ICON_FONT, LEAD_SIZE, MODE_PILL_ID, Message, Mode, ModelSettingsView, NEW_BUTTON_ID,
-    OPEN_BUTTON_ID, READING_FONT, SAVE_AS_BUTTON_ID, SAVE_BUTTON_ID, SETTINGS_BUTTON_ID,
-    SPEECH_PILL_ID, SpeechTrigger, UI_BOLD_FONT, UI_FONT, UI_SEMIBOLD_FONT, UiState, ui,
+    App, BODY_SIZE, CAPTION_SIZE, CHECKER_PILL_ID, CODEX_PILL_ID, COMMAND_ID,
+    EDITOR_CURSOR_PROBE_ID, EDITOR_FONT, EDITOR_ID, EDITOR_SCROLL_ID, ICON_FONT, LEAD_SIZE,
+    MODE_PILL_ID, Message, Mode, ModelSettingsView, NEW_BUTTON_ID, OPEN_BUTTON_ID, READING_FONT,
+    SAVE_AS_BUTTON_ID, SAVE_BUTTON_ID, SETTINGS_BUTTON_ID, SPEECH_PILL_ID, SpeechTrigger,
+    UI_BOLD_FONT, UI_FONT, UI_SEMIBOLD_FONT, UiState, ui,
 };
 use crate::checker::CheckingProvider;
 use crate::edit::EditIntent;
@@ -18,8 +19,8 @@ use crate::edit::EditIntent;
 use crate::model;
 
 use iced::widget::{
-    button, column, container, progress_bar, row, space, stack, text, text_editor, text_input,
-    tooltip,
+    button, column, container, progress_bar, row, scrollable, space, stack, text, text_editor,
+    text_input, tooltip,
 };
 use iced::{Border, Center, Color, Element, Fill, FillPortion, Font, Left, Right, Top};
 use lucide_icons::Icon;
@@ -269,7 +270,7 @@ impl App {
             .and_then(ffi::OsStr::to_str)
             .unwrap_or("txt");
         let mode = self.mode;
-        text_editor(self.document.content())
+        let editor = text_editor(self.document.content())
             .id(EDITOR_ID)
             .height(Fill)
             .font(EDITOR_FONT)
@@ -284,8 +285,39 @@ impl App {
             })
             .highlight(extension, self.syntax_theme)
             .style(ui::editor)
-            .key_binding(move |key_press| editor_binding(mode, key_press))
-            .into()
+            .key_binding(move |key_press| editor_binding(mode, key_press));
+
+        let snapshot = self.document.snapshot();
+        let wrapping = if self.word_wrap {
+            iced::widget::text::Wrapping::Word
+        } else {
+            iced::widget::text::Wrapping::None
+        };
+        let transparent_text = |content: String| {
+            text(content)
+                .font(EDITOR_FONT)
+                .size(self.editor_text_size())
+                .line_height(1.5)
+                .wrapping(wrapping)
+                .color(Color::TRANSPARENT)
+                .width(Fill)
+        };
+        let cursor_probe = container(transparent_text(
+            snapshot.text[..snapshot.cursor].to_owned(),
+        ))
+        .id(EDITOR_CURSOR_PROBE_ID)
+        .width(Fill);
+        let scroll_content = container(stack![transparent_text(snapshot.text), cursor_probe,])
+            .width(Fill)
+            .padding(18);
+        let scrollbar = scrollable(scroll_content)
+            .id(EDITOR_SCROLL_ID)
+            .width(Fill)
+            .height(Fill)
+            .on_scroll(Message::EditorScrollbarScrolled)
+            .style(ui::editor_scrollbar);
+
+        stack![editor, scrollbar].width(Fill).height(Fill).into()
     }
 
     fn command_panel(&self) -> Option<Element<'_, Message>> {

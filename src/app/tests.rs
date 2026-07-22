@@ -56,6 +56,86 @@ fn tiny_skia_simulator(app: &App, size: (f32, f32)) -> Simulator<'_, Message> {
     Simulator::with_size(settings, size, app.view())
 }
 
+#[test]
+fn main_editor_scrollbar_tracks_overflow_and_scrolls_without_editing() -> Result<(), Error> {
+    let text = (0..24)
+        .map(|line| format!("line {line}: the scrollbar must preserve this text"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut app, _speech, _codex) = test_app(&text);
+    app.document.perform(
+        text_editor::Action::Move(text_editor::Motion::DocumentStart),
+        false,
+    );
+
+    let messages = {
+        let mut ui = tiny_skia_simulator(&app, MIN_WINDOW_SIZE);
+        let editor_bounds = ui.find(id(EDITOR_ID))?.bounds();
+        let scrollbar_bounds = ui.find(id(EDITOR_SCROLL_ID))?.bounds();
+        assert_eq!(scrollbar_bounds, editor_bounds);
+
+        ui.click(id(EDITOR_ID))?;
+        ui.point_at(editor_bounds.center());
+        let _ = ui.simulate([Event::Mouse(iced::mouse::Event::WheelScrolled {
+            delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+        })]);
+        ui.into_messages().collect::<Vec<_>>()
+    };
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Editor(text_editor::Action::Click(_))))
+    );
+    let viewport = messages
+        .into_iter()
+        .find_map(|message| match message {
+            Message::EditorScrollbarScrolled(viewport) => Some(viewport),
+            _ => None,
+        })
+        .expect("scrolling the editor overlay should report its viewport");
+    assert!(viewport.content_bounds().height > viewport.bounds().height);
+    assert!(viewport.absolute_offset().y > 0.0);
+
+    let _ = app.scroll_editor_from_scrollbar(viewport);
+    assert!(app.editor_scroll_y > 0.0);
+    assert_eq!(app.document.text(), text);
+    Ok(())
+}
+
+#[test]
+fn editor_scroll_metrics_keep_cursor_inside_the_viewport() {
+    let (mut app, _speech, _codex) = test_app("safe text");
+    app.editor_scroll_y = 0.0;
+    let line_height = app.editor_line_height();
+
+    let _ = app.update_editor_scroll_metrics(
+        EditorScrollMetrics {
+            offset_y: 0.0,
+            viewport_height: line_height * 4.0,
+            content_height: line_height * 20.0,
+            cursor_top: 0.0,
+            cursor_height: line_height * 10.0,
+        },
+        true,
+    );
+
+    assert_eq!(app.editor_scroll_y, line_height * 6.0);
+
+    let _ = app.update_editor_scroll_metrics(
+        EditorScrollMetrics {
+            offset_y: app.editor_scroll_y,
+            viewport_height: line_height * 4.0,
+            content_height: line_height * 20.0,
+            cursor_top: 0.0,
+            cursor_height: line_height * 2.0,
+        },
+        true,
+    );
+
+    assert_eq!(app.editor_scroll_y, line_height);
+}
+
 fn assert_button_label_centered(
     ui: &mut Simulator<'_, Message>,
     control_id: &'static str,
@@ -646,6 +726,7 @@ fn replacing_document_clears_capture_but_tracks_discarded_codex_work() {
 
     // Replacing the buffer clears capture-only state but retains request
     // bookkeeping long enough to reject the old result by generation.
+    app.editor_scroll_y = app.editor_line_height() * 4.0;
     app.replace_document("Replacement document");
     app.set_notice(Notice::new(
         NoticeSource::File,
@@ -657,6 +738,7 @@ fn replacing_document_clears_capture_but_tracks_discarded_codex_work() {
     assert!(app.active_utterance.is_none());
     assert!(app.partial_transcript.is_empty());
     assert_eq!(app.microphone_level, 0.0);
+    assert_eq!(app.editor_scroll_y, 0.0);
     assert_eq!(app.speech_state, UiState::Ready);
     assert_eq!(app.codex_state, UiState::Working);
     assert!(app.pending.contains_key(&old_request.id));

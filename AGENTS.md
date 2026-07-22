@@ -80,11 +80,12 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 89 tests: 76 normal and thirteen
-  ignored. The no-default-feature build discovers 81: 71 normal and ten
+- The default-feature build currently discovers 91 tests: 78 normal and thirteen
+  ignored. The no-default-feature build discovers 84: 74 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
-- `cargo test` passes with the default feature and with
-  `--no-default-features`.
+- `cargo nextest run` passes with the default feature and with
+  `--no-default-features`; nextest keeps concurrent iced simulators in isolated
+  processes.
 - The repository began as an uncommitted `cargo new` scaffold. Treat all
   existing changes as user-owned; never reset or discard them.
 
@@ -442,8 +443,9 @@ Primary checks:
 
 ```sh
 cargo fmt --check
-cargo test
+cargo nextest run --status-level fail --show-progress none
 cargo clippy --all-targets -- -D warnings
+cargo nextest run --status-level fail --show-progress none --no-default-features
 cargo check --no-default-features
 ```
 

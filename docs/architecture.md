@@ -130,6 +130,17 @@ The second check is essential. Current iced routes IME commits and the result of
 an asynchronous clipboard read directly as `Action::Edit`, bypassing the key
 binding closure.
 
+Pinned iced's text editor scrolls internally but does not expose a scrollbar or
+its renderer-owned offset through widget operations. Talkdown overlays an iced
+vertical `scrollable` whose transparent text mirror uses the editor's font,
+size, line height, wrapping, and padding. The mirror supplies accurate overflow
+and thumb geometry without becoming authoritative document state. Wheel and
+thumb movement are converted back into the editor's native line-scroll action.
+After cursor-affecting editor actions, a read-only widget operation collects the
+mirror viewport plus a transparent cursor-prefix probe and synchronizes the
+scrollbar while keeping keyboard navigation visible. Scroll synchronization
+never enters the trusted edit path and cannot change document text or history.
+
 Normal-mode physical Insert maps to the trusted mode transition without a text
 mutation. Physical Delete and Backspace first use `Document::delete_forward`
 or `Document::delete_backward` for the current selection or adjacent character,

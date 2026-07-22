@@ -1,12 +1,78 @@
 //! Editor bindings, global shortcuts, and focus-safe caret maintenance.
 
-use super::{Message, Mode, SpeechTrigger, TEXT_SCALE_STEP_PERCENT, UI_SCALE_STEP_PERCENT};
+use super::{
+    EDITOR_CURSOR_PROBE_ID, EDITOR_SCROLL_ID, EditorScrollMetrics, Message, Mode, SpeechTrigger,
+    TEXT_SCALE_STEP_PERCENT, UI_SCALE_STEP_PERCENT,
+};
 use crate::edit::EditIntent;
 
 use iced::event::{self, Event};
 use iced::keyboard::{self, key};
 use iced::widget::text_editor;
-use iced::{Rectangle, window};
+use iced::{Rectangle, Vector, window};
+
+pub(super) struct ReadEditorScroll {
+    scroll_target: iced::advanced::widget::Id,
+    cursor_target: iced::advanced::widget::Id,
+    scroll_bounds: Option<(Rectangle, Rectangle, Vector)>,
+    cursor_bounds: Option<Rectangle>,
+}
+
+impl ReadEditorScroll {
+    pub(super) fn new() -> Self {
+        Self {
+            scroll_target: EDITOR_SCROLL_ID.into(),
+            cursor_target: EDITOR_CURSOR_PROBE_ID.into(),
+            scroll_bounds: None,
+            cursor_bounds: None,
+        }
+    }
+}
+
+impl iced::advanced::widget::Operation<EditorScrollMetrics> for ReadEditorScroll {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<EditorScrollMetrics>),
+    ) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&self.scroll_target) {
+            self.scroll_bounds = Some((bounds, content_bounds, translation));
+        }
+    }
+
+    fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle) {
+        if id == Some(&self.cursor_target) {
+            self.cursor_bounds = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<EditorScrollMetrics> {
+        let Some((bounds, content_bounds, translation)) = self.scroll_bounds else {
+            return iced::advanced::widget::operation::Outcome::None;
+        };
+        let Some(cursor_bounds) = self.cursor_bounds else {
+            return iced::advanced::widget::operation::Outcome::None;
+        };
+
+        iced::advanced::widget::operation::Outcome::Some(EditorScrollMetrics {
+            offset_y: translation.y,
+            viewport_height: bounds.height,
+            content_height: content_bounds.height,
+            cursor_top: (cursor_bounds.y - content_bounds.y).max(0.0),
+            cursor_height: cursor_bounds.height,
+        })
+    }
+}
 
 pub(super) struct RefreshFocusedEditor {
     target: iced::advanced::widget::Id,

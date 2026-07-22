@@ -2,7 +2,7 @@
 
 use super::UiState;
 
-use iced::widget::{button, container, progress_bar, text_editor, text_input};
+use iced::widget::{button, container, progress_bar, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector, theme};
 
 use std::sync::LazyLock;
@@ -240,6 +240,29 @@ pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style 
             BORDER
         },
     );
+    style
+}
+
+pub fn editor_scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let mut style = scrollable::default(theme, status);
+    let hovered = matches!(
+        status,
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered: true,
+            ..
+        } | scrollable::Status::Dragged {
+            is_vertical_scrollbar_dragged: true,
+            ..
+        }
+    );
+    style.vertical_rail.background = Some(EDITOR.scale_alpha(0.92).into());
+    style.vertical_rail.border = Border::default().rounded(5);
+    style.vertical_rail.scroller.background = if hovered {
+        PRIMARY_HOVER.into()
+    } else {
+        BORDER_STRONG.into()
+    };
+    style.vertical_rail.scroller.border = Border::default().rounded(5);
     style
 }
 
