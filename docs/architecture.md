@@ -28,6 +28,47 @@ microphone -> tagged bounded audio -> capture worker -> latest partial job
                                       one editor transaction
 ```
 
+The iced application is split by responsibility under `src/app/`. `app.rs`
+owns state and message types, construction, subscriptions, ordered modal
+shielding, message routing, and shared notice policy. `editor.rs` owns trusted
+editor/mode/zoom transitions; `settings.rs` owns the staged preference and
+model-provisioning transaction; `voice.rs` owns capture and Speech events;
+`semantic.rs` owns optimistic checking and the locally validated Codex edit
+transaction; and `file_lifecycle.rs` owns generation-guarded file and watcher
+state. At the edges, `input.rs` owns bindings and guarded caret maintenance,
+`transcription.rs` contains pure UTF-8-safe dictation helpers, and `file_io.rs`
+adapts native dialogs and disk operations. `view.rs` composes the stateless
+widget tree, with Settings and safety confirmations in `view/settings.rs` and
+`view/modals.rs`; `ui.rs` centralizes palette and styles; `tests.rs` contains
+the private whole-app harness. Pure bounded-copy and checker-audit display
+formatting lives in `presentation.rs`, so domain transactions do not depend on
+widget construction. These remain one Rust `app` module boundary, so the split
+does not create a second state owner.
+
+The service boundaries follow the same facade-and-stages pattern. `codex.rs`
+owns the bridge and reconnecting worker, while `codex/context.rs` owns the
+bounded untrusted-data prompt and `codex/app_server.rs` owns JSONL transport,
+authentication, model discovery, thread startup, and turn correlation.
+`model.rs` exposes the stable configuration/provisioning API;
+`model/preferences.rs` owns precedence, platform paths, normalization, and
+atomic persistence, while `model/download.rs` owns the cancellable staged
+transfer, integrity verification, and installation transaction. `speech.rs`
+similarly exposes only bridge commands and events. `speech/worker.rs` owns the
+feature-specific lifecycle, and `speech/whisper/` separates the biased
+orchestrator, bounded audio input, utterance capture state, and prioritized
+decoder queues. Each facade keeps UI dependencies narrow while the internal
+types make queue ownership and stage inputs explicit.
+
+The synchronous text core remains deliberately smaller. `Document` delegates
+history transitions to a bounded `History` and validates each trusted
+replacement into a `ReplacementPlan` before touching iced content. The edit
+resolver separates empty insertions, exact selections, nearest-target
+resolution, and stale exact-target rebasing. The Harper checker names each
+stage of its conservative pipeline in `checker/harper.rs`: scope
+normalization, finding classification, overlap selection, descending
+correction application, seam normalization, and audit merging. `checker.rs`
+retains the provider, result, and audit facade.
+
 ## State ownership
 
 `Document` wraps iced's `text_editor::Content` and adds a monotonically changing
@@ -118,17 +159,18 @@ is host-dependent. Base16 Ocean supplies syntax colors independently of the
 application palette.
 
 Repeated presentation structures are small widget-returning component
-functions in `app.rs`, rather than stateful widget objects. Toolbar actions and
-Settings section labels, preference rows, dialog actions, and scale controls
-share these functions. The application remains the single owner of state and
-messages; each component receives the copy, enabled message, or control it
-needs and returns an `Element`. This keeps the main view declarative without
-introducing a second component-state hierarchy. Distinct controls such as the
-dirty-aware Save action remain explicit when their behavior is not actually
-shared. Because pinned iced does not expose Button content alignment, explicit-
-height buttons use a fill-height centered label component; explicit-width and
-height buttons use a label centered on both axes. Content-sized buttons retain
-plain text plus symmetric padding so a fill constraint cannot expand them.
+functions in `src/app/view.rs` and `src/app/view/settings.rs`, rather than
+stateful widget objects. Toolbar actions and Settings section labels,
+preference rows, dialog actions, and scale controls share these functions. The
+application remains the single owner of state and messages; each component
+receives the copy, enabled message, or control it needs and returns an
+`Element`. This keeps the main view declarative without introducing a second
+component-state hierarchy. Distinct controls such as the dirty-aware Save
+action remain explicit when their behavior is not actually shared. Because
+pinned iced does not expose Button content alignment, explicit-height buttons
+use a fill-height centered label component; explicit-width and height buttons
+use a label centered on both axes. Content-sized buttons retain plain text plus
+symmetric padding so a fill constraint cannot expand them.
 
 The voice workspace uses an explicit two-column grid: transcript content fills
 the left column, while active recording feedback and recovery controls have a

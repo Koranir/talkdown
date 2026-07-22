@@ -1,3 +1,5 @@
+//! Talkdown's small semantic-edit language and exact local target resolver.
+
 use crate::document::DocumentSnapshot;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,50 @@ pub enum Anchor {
     AroundCursor,
 }
 
+impl Anchor {
+    fn accepts_empty_target(self) -> bool {
+        self == Self::Cursor
+    }
+
+    fn uses_selection(self) -> bool {
+        self == Self::Selection
+    }
+
+    fn accepts_candidate(self, range: &Range<usize>, cursor: usize) -> bool {
+        match self {
+            Self::BeforeCursor => range.end <= cursor,
+            Self::AfterCursor => range.start >= cursor,
+            Self::Cursor | Self::AroundCursor => true,
+            Self::Selection => false,
+        }
+    }
+
+    fn compare_candidates(
+        self,
+        left: &Range<usize>,
+        right: &Range<usize>,
+        cursor: usize,
+    ) -> Ordering {
+        self.distance_to(left, cursor)
+            .cmp(&self.distance_to(right, cursor))
+            .then_with(|| left.start.cmp(&right.start))
+    }
+
+    fn distance_to(self, range: &Range<usize>, cursor: usize) -> usize {
+        match self {
+            Self::BeforeCursor => cursor.saturating_sub(range.end),
+            Self::AfterCursor => range.start.saturating_sub(cursor),
+            Self::Cursor | Self::AroundCursor | Self::Selection => {
+                if range.contains(&cursor) || range.end == cursor {
+                    0
+                } else {
+                    range.start.abs_diff(cursor).min(range.end.abs_diff(cursor))
+                }
+            }
+        }
+    }
+}
+
 /// The deliberately small edit language returned by Codex.
 ///
 /// `target` must be copied exactly from the supplied document context. Keeping
@@ -47,6 +93,15 @@ pub struct ResolvedEdit {
 }
 
 impl ResolvedEdit {
+    fn from_proposal(range: Range<usize>, proposal: &ProposedEdit, candidate_count: usize) -> Self {
+        Self {
+            range,
+            replacement: proposal.replacement.clone(),
+            summary: proposal.summary.clone(),
+            candidate_count,
+        }
+    }
+
     pub fn is_unambiguous(&self) -> bool {
         self.candidate_count == 1
     }
@@ -65,60 +120,62 @@ pub fn resolve(
     edit: &ProposedEdit,
 ) -> Result<ResolvedEdit, ResolveError> {
     if edit.target.is_empty() {
-        if edit.anchor != Anchor::Cursor {
-            return Err(ResolveError::EmptyTargetNeedsCursor);
-        }
-
-        return Ok(ResolvedEdit {
-            range: snapshot.target_range(),
-            replacement: edit.replacement.clone(),
-            summary: edit.summary.clone(),
-            candidate_count: 1,
-        });
+        return resolve_empty_target(snapshot, edit);
     }
 
-    if edit.anchor == Anchor::Selection {
-        let selection = snapshot
-            .selection
-            .clone()
-            .ok_or(ResolveError::MissingSelection)?;
-
-        if snapshot.text.get(selection.clone()) != Some(edit.target.as_str()) {
-            return Err(ResolveError::SelectionMismatch);
-        }
-
-        return Ok(ResolvedEdit {
-            range: selection,
-            replacement: edit.replacement.clone(),
-            summary: edit.summary.clone(),
-            candidate_count: 1,
-        });
+    if edit.anchor.uses_selection() {
+        return resolve_selection(snapshot, edit);
     }
 
-    let candidates: Vec<Range<usize>> = snapshot
-        .text
-        .match_indices(&edit.target)
-        .map(|(start, matched)| start..start + matched.len())
-        .filter(|range| match edit.anchor {
-            Anchor::BeforeCursor => range.end <= snapshot.cursor,
-            Anchor::AfterCursor => range.start >= snapshot.cursor,
-            Anchor::Cursor | Anchor::AroundCursor => true,
-            Anchor::Selection => false,
-        })
+    resolve_nearest_candidate(snapshot, edit)
+}
+
+fn resolve_empty_target(
+    snapshot: &DocumentSnapshot,
+    edit: &ProposedEdit,
+) -> Result<ResolvedEdit, ResolveError> {
+    if !edit.anchor.accepts_empty_target() {
+        return Err(ResolveError::EmptyTargetNeedsCursor);
+    }
+
+    Ok(ResolvedEdit::from_proposal(
+        snapshot.target_range(),
+        edit,
+        1,
+    ))
+}
+
+fn resolve_selection(
+    snapshot: &DocumentSnapshot,
+    edit: &ProposedEdit,
+) -> Result<ResolvedEdit, ResolveError> {
+    let selection = snapshot
+        .selection
+        .clone()
+        .ok_or(ResolveError::MissingSelection)?;
+
+    if snapshot.text.get(selection.clone()) != Some(edit.target.as_str()) {
+        return Err(ResolveError::SelectionMismatch);
+    }
+
+    Ok(ResolvedEdit::from_proposal(selection, edit, 1))
+}
+
+fn resolve_nearest_candidate(
+    snapshot: &DocumentSnapshot,
+    edit: &ProposedEdit,
+) -> Result<ResolvedEdit, ResolveError> {
+    let candidates: Vec<_> = exact_target_ranges(&snapshot.text, &edit.target)
+        .filter(|range| edit.anchor.accepts_candidate(range, snapshot.cursor))
         .collect();
 
     let candidate_count = candidates.len();
     let range = candidates
         .into_iter()
-        .min_by(|left, right| compare_distance(left, right, snapshot.cursor, edit.anchor))
+        .min_by(|left, right| edit.anchor.compare_candidates(left, right, snapshot.cursor))
         .ok_or(ResolveError::TargetNotFound)?;
 
-    Ok(ResolvedEdit {
-        range,
-        replacement: edit.replacement.clone(),
-        summary: edit.summary.clone(),
-        candidate_count,
-    })
+    Ok(ResolvedEdit::from_proposal(range, edit, candidate_count))
 }
 
 /// Rebases an already validated, non-empty target after the document changed.
@@ -132,44 +189,19 @@ pub fn rebase_exact(
         return Err(ResolveError::EmptyTargetNeedsCursor);
     }
 
-    let mut candidates = snapshot
-        .text
-        .match_indices(&edit.target)
-        .map(|(start, matched)| start..start + matched.len());
+    let mut candidates = exact_target_ranges(&snapshot.text, &edit.target);
     let range = candidates.next().ok_or(ResolveError::TargetNotFound)?;
     let candidate_count = 1 + candidates.count();
 
-    Ok(ResolvedEdit {
-        range,
-        replacement: edit.replacement.clone(),
-        summary: edit.summary.clone(),
-        candidate_count,
-    })
+    Ok(ResolvedEdit::from_proposal(range, edit, candidate_count))
 }
 
-fn compare_distance(
-    left: &Range<usize>,
-    right: &Range<usize>,
-    cursor: usize,
-    anchor: Anchor,
-) -> Ordering {
-    distance(left, cursor, anchor)
-        .cmp(&distance(right, cursor, anchor))
-        .then_with(|| left.start.cmp(&right.start))
-}
-
-fn distance(range: &Range<usize>, cursor: usize, anchor: Anchor) -> usize {
-    match anchor {
-        Anchor::BeforeCursor => cursor.saturating_sub(range.end),
-        Anchor::AfterCursor => range.start.saturating_sub(cursor),
-        Anchor::Cursor | Anchor::AroundCursor | Anchor::Selection => {
-            if range.contains(&cursor) || range.end == cursor {
-                0
-            } else {
-                range.start.abs_diff(cursor).min(range.end.abs_diff(cursor))
-            }
-        }
-    }
+fn exact_target_ranges<'a>(
+    text: &'a str,
+    target: &'a str,
+) -> impl Iterator<Item = Range<usize>> + 'a {
+    text.match_indices(target)
+        .map(|(start, matched)| start..start + matched.len())
 }
 
 pub const OUTPUT_SCHEMA: &str = r#"
@@ -229,6 +261,14 @@ mod tests {
 
         assert_eq!(resolved.range, 9..13);
         assert_eq!(resolved.candidate_count, 2);
+
+        let after_cursor = ProposedEdit {
+            anchor: Anchor::AfterCursor,
+            ..edit
+        };
+        let resolved = resolve(&snapshot("word and word later word", 5), &after_cursor).unwrap();
+        assert_eq!(resolved.range, 9..13);
+        assert_eq!(resolved.candidate_count, 2);
     }
 
     #[test]
@@ -243,6 +283,18 @@ mod tests {
         snapshot.selection = Some(4..7);
 
         assert_eq!(resolve(&snapshot, &edit).unwrap().range, 4..7);
+
+        snapshot.selection = Some(0..3);
+        assert_eq!(
+            resolve(&snapshot, &edit),
+            Err(ResolveError::SelectionMismatch)
+        );
+
+        snapshot.selection = None;
+        assert_eq!(
+            resolve(&snapshot, &edit),
+            Err(ResolveError::MissingSelection)
+        );
     }
 
     #[test]
@@ -256,6 +308,15 @@ mod tests {
 
         assert_eq!(
             resolve(&snapshot("text", 2), &edit),
+            Err(ResolveError::EmptyTargetNeedsCursor)
+        );
+
+        let cursor_edit = ProposedEdit {
+            anchor: Anchor::Cursor,
+            ..edit
+        };
+        assert_eq!(
+            rebase_exact(&snapshot("text", 2), &cursor_edit),
             Err(ResolveError::EmptyTargetNeedsCursor)
         );
     }
@@ -273,5 +334,11 @@ mod tests {
         let rebased = rebase_exact(&current, &edit).unwrap();
         assert_eq!(rebased.range, 7..16);
         assert!(rebased.is_unambiguous());
+
+        let ambiguous = snapshot("raw words, then raw words", 0);
+        let rebased = rebase_exact(&ambiguous, &edit).unwrap();
+        assert_eq!(rebased.range, 0..9);
+        assert_eq!(rebased.candidate_count, 2);
+        assert!(!rebased.is_unambiguous());
     }
 }

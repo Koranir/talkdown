@@ -1,3 +1,5 @@
+//! Parent-directory file watching with bounded, target-filtered UI events.
+
 use crate::event_stream::{EventSender, EventStream, bounded};
 
 use async_channel::TrySendError;
@@ -14,6 +16,18 @@ const EVENT_CAPACITY: usize = 8;
 struct WatchTarget {
     file: PathBuf,
     directory: PathBuf,
+}
+
+impl WatchTarget {
+    fn resolve(path: &Path) -> Option<Self> {
+        let file = std::path::absolute(path).ok()?;
+        let directory = file.parent()?.to_owned();
+        Some(Self { file, directory })
+    }
+
+    fn matches(&self, path: &Path) -> bool {
+        std::path::absolute(path).is_ok_and(|path| path == self.file || path == self.directory)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,14 +52,7 @@ impl FileWatcher {
         let target = Arc::new(RwLock::new(None));
         let callback_target = Arc::clone(&target);
         let watcher = notify::recommended_watcher(move |event| {
-            let signal = match event {
-                Ok(event) if event_matches_target(&event, &callback_target) => {
-                    Some(FileWatchEvent::Changed)
-                }
-                Ok(_) => None,
-                Err(_) => Some(FileWatchEvent::Failed),
-            };
-            if let Some(signal) = signal {
+            if let Some(signal) = classify_event(event, &callback_target) {
                 send_bounded(&callback_tx, signal);
             }
         })
@@ -86,16 +93,18 @@ impl FileWatcher {
     }
 
     pub fn watch_file(&mut self, path: Option<&Path>) {
-        let target = path
-            .and_then(|path| std::path::absolute(path).ok())
-            .and_then(|file| {
-                let directory = file.parent()?.to_owned();
-                Some(WatchTarget { file, directory })
-            });
+        let target = path.and_then(WatchTarget::resolve);
+        self.publish_target(target.clone());
+        self.watch_directory(target.map(|target| target.directory));
+    }
+
+    fn publish_target(&self, target: Option<WatchTarget>) {
         if let Ok(mut current) = self.target.write() {
-            *current = target.clone();
+            *current = target;
         }
-        let directory = target.map(|target| target.directory);
+    }
+
+    fn watch_directory(&mut self, directory: Option<PathBuf>) {
         if directory == self.watched_directory {
             return;
         }
@@ -130,6 +139,17 @@ impl FileWatcher {
     }
 }
 
+fn classify_event(
+    event: notify::Result<Event>,
+    target: &RwLock<Option<WatchTarget>>,
+) -> Option<FileWatchEvent> {
+    match event {
+        Ok(event) if event_matches_target(&event, target) => Some(FileWatchEvent::Changed),
+        Ok(_) => None,
+        Err(_) => Some(FileWatchEvent::Failed),
+    }
+}
+
 #[cfg_attr(test, allow(dead_code))]
 fn event_matches_target(event: &Event, target: &RwLock<Option<WatchTarget>>) -> bool {
     if matches!(event.kind, EventKind::Access(_)) {
@@ -142,11 +162,7 @@ fn event_matches_target(event: &Event, target: &RwLock<Option<WatchTarget>>) -> 
         return false;
     };
 
-    event.paths.is_empty()
-        || event.paths.iter().any(|path| {
-            std::path::absolute(path)
-                .is_ok_and(|path| path == target.file || path == target.directory)
-        })
+    event.paths.is_empty() || event.paths.iter().any(|path| target.matches(path))
 }
 
 fn send_bounded(sender: &EventSender<FileWatchEvent>, event: FileWatchEvent) {

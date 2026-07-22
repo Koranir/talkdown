@@ -1,7 +1,10 @@
-use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
-use harper_core::parsers::PlainEnglish;
-use harper_core::spell::FstDictionary;
-use harper_core::{Dialect, Document, remove_overlaps};
+//! Conservative local dictation checking with a complete in-memory audit.
+
+mod harper;
+
+pub use harper::HarperChecker;
+
+use harper_core::linting::LintKind;
 use serde::{Deserialize, Serialize};
 
 use std::fmt;
@@ -115,245 +118,16 @@ impl fmt::Display for IgnoreReason {
     }
 }
 
-/// A reusable local Harper pipeline. Keeping it in application state avoids
-/// rebuilding the curated dictionary and linter for every short utterance.
-pub struct HarperChecker {
-    linter: LintGroup,
-}
-
-impl Default for HarperChecker {
-    fn default() -> Self {
-        Self {
-            linter: LintGroup::new_curated(FstDictionary::curated(), Dialect::American),
-        }
-    }
-}
-
-impl HarperChecker {
-    #[cfg(test)]
-    pub fn check(&mut self, source: &str) -> CheckResult {
-        let end = source.chars().count();
-        self.check_scoped(source, 0..end, end)
-    }
-
-    /// Checks a bounded slice of the document while applying only findings in
-    /// the sentence containing the newly inserted transcript. Character
-    /// offsets are relative to `source`, matching Harper's span unit.
-    pub fn check_focused(&mut self, source: &str, focus: Range<usize>) -> CheckResult {
-        let (normalized, focus, mut seam_fixes) = normalize_dictation_seams(source, focus);
-        let scope = containing_sentence(&normalized, &focus);
-        let mut result = self.check_scoped(&normalized, scope, focus.end);
-        seam_fixes.append(&mut result.audit.applied);
-        seam_fixes.sort_by_key(|lint| (lint.span.start, lint.span.end));
-        result.audit.applied = seam_fixes;
-        result
-    }
-
-    fn check_scoped(&mut self, source: &str, scope: Range<usize>, focus_end: usize) -> CheckResult {
-        let source_len = source.chars().count();
-        let scope = scope.start.min(source_len)..scope.end.min(source_len);
-        let document = Document::new_curated(source, &PlainEnglish);
-        let detected = self.linter.lint(&document);
-        let mut candidates = Vec::new();
-        let mut ignored = Vec::new();
-
-        for lint in detected {
-            let reason = if !overlaps(&lint, &scope) {
-                Some(IgnoreReason::OutsideDictationSentence)
-            } else {
-                automatic_ignore_reason(&lint)
-            };
-
-            if let Some(reason) = reason {
-                ignored.push(IgnoredLint {
-                    lint: lint_record(&lint),
-                    reason,
-                });
-            } else {
-                candidates.push(lint);
-            }
-        }
-
-        let mut selected = candidates.clone();
-        remove_overlaps(&mut selected);
-
-        // Use a multiset-style match so identical overlapping findings are
-        // still recorded independently instead of both appearing applied.
-        let mut unmatched_selected = selected.clone();
-        for lint in candidates {
-            if let Some(index) = unmatched_selected.iter().position(|entry| entry == &lint) {
-                unmatched_selected.remove(index);
-            } else {
-                ignored.push(IgnoredLint {
-                    lint: lint_record(&lint),
-                    reason: IgnoreReason::Overlap,
-                });
-            }
-        }
-
-        let mut applied = selected.iter().map(lint_record).collect::<Vec<_>>();
-        applied.sort_by_key(|lint| (lint.span.start, lint.span.end));
-        ignored.sort_by_key(|lint| (lint.lint.span.start, lint.lint.span.end));
-
-        selected.sort_by_key(|lint| std::cmp::Reverse((lint.span.start, lint.span.end)));
-
-        let mut corrected: Vec<char> = source.chars().collect();
-        let mut focus_end = focus_end.min(source_len);
-        for lint in selected {
-            focus_end = map_boundary_after_suggestion(focus_end, &lint);
-            lint.suggestions[0].apply(lint.span, &mut corrected);
-        }
-
-        CheckResult {
-            text: corrected.into_iter().collect(),
-            audit: LintAudit { applied, ignored },
-            focus_end,
-        }
-    }
-}
-
-fn containing_sentence(source: &str, focus: &Range<usize>) -> Range<usize> {
-    let chars = source.chars().collect::<Vec<_>>();
-    let mut start = focus.start.min(chars.len());
-    while start > 0 {
-        if matches!(chars[start - 1], '.' | '!' | '?' | '\n' | '\r') {
-            break;
-        }
-        start -= 1;
-    }
-
-    let mut end = focus.end.min(chars.len());
-    let focus_ends_sentence = chars[focus.start.min(end)..end]
-        .iter()
-        .rev()
-        .find(|character| !character.is_whitespace())
-        .is_some_and(|character| matches!(character, '.' | '!' | '?'));
-    if focus_ends_sentence {
-        return start..end;
-    }
-
-    while end < chars.len() {
-        let boundary = matches!(chars[end], '.' | '!' | '?' | '\n' | '\r');
-        end += 1;
-        if boundary {
-            break;
-        }
-    }
-
-    start..end
-}
-
-fn normalize_dictation_seams(
-    source: &str,
-    focus: Range<usize>,
-) -> (String, Range<usize>, Vec<LintRecord>) {
-    let mut chars = source.chars().collect::<Vec<_>>();
-    let mut focus = focus.start.min(chars.len())..focus.end.min(chars.len());
-    let mut applied = Vec::new();
-
-    if focus.start > 0
-        && focus.start < chars.len()
-        && needs_dictation_space(chars[focus.start - 1], chars[focus.start])
-    {
-        let position = focus.start;
-        chars.insert(position, ' ');
-        focus = focus.start + 1..focus.end + 1;
-        applied.push(seam_lint(position, "before"));
-    }
-
-    if focus.end > 0
-        && focus.end < chars.len()
-        && needs_dictation_space(chars[focus.end - 1], chars[focus.end])
-    {
-        let position = focus.end;
-        chars.insert(position, ' ');
-        focus.end += 1;
-        applied.push(seam_lint(position, "after"));
-    }
-
-    (chars.into_iter().collect(), focus, applied)
-}
-
-fn needs_dictation_space(left: char, right: char) -> bool {
-    if left.is_whitespace() || right.is_whitespace() {
-        return false;
-    }
-
-    (left.is_alphanumeric() && right.is_alphanumeric())
-        || (matches!(left, '.' | ',' | '!' | '?' | ';' | ':') && right.is_alphanumeric())
-}
-
-fn seam_lint(position: usize, side: &str) -> LintRecord {
-    LintRecord {
-        span: position..position,
-        kind: LintKind::Punctuation,
-        message: format!("Missing whitespace {side} the transcribed text."),
-        suggestions: vec!["Insert “ ”".into()],
-    }
-}
-
-fn overlaps(lint: &Lint, focus: &Range<usize>) -> bool {
-    if lint.span.start == lint.span.end {
-        focus.start <= lint.span.start && lint.span.start <= focus.end
-    } else {
-        lint.span.start < focus.end && focus.start < lint.span.end
-    }
-}
-
-fn map_boundary_after_suggestion(boundary: usize, lint: &Lint) -> usize {
-    let (start, end, replacement_len) = match &lint.suggestions[0] {
-        Suggestion::ReplaceWith(chars) => (lint.span.start, lint.span.end, chars.len()),
-        Suggestion::Remove => (lint.span.start, lint.span.end, 0),
-        Suggestion::InsertAfter(chars) => (lint.span.end, lint.span.end, chars.len()),
-    };
-
-    if end <= boundary {
-        boundary - (end - start) + replacement_len
-    } else if start < boundary {
-        start + replacement_len
-    } else {
-        boundary
-    }
-}
-
-fn lint_record(lint: &Lint) -> LintRecord {
-    LintRecord {
-        span: lint.span.start..lint.span.end,
-        kind: lint.lint_kind,
-        message: lint.message.clone(),
-        suggestions: lint.suggestions.iter().map(ToString::to_string).collect(),
-    }
-}
-
-fn automatic_ignore_reason(lint: &Lint) -> Option<IgnoreReason> {
-    if !safe_for_automatic_dictation(lint.lint_kind) {
-        Some(IgnoreReason::PolicyExcluded)
-    } else {
-        match lint.suggestions.len() {
-            0 => Some(IgnoreReason::NoSuggestion),
-            1 => None,
-            _ => Some(IgnoreReason::Ambiguous),
-        }
-    }
-}
-
-fn safe_for_automatic_dictation(kind: LintKind) -> bool {
-    matches!(
-        kind,
-        LintKind::Agreement
-            | LintKind::BoundaryError
-            | LintKind::Capitalization
-            | LintKind::Grammar
-            | LintKind::Miscellaneous
-            | LintKind::Punctuation
-            | LintKind::Repetition
-            | LintKind::Typo
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::harper::{
+        CorrectionApplicationRequest, LintClassificationRequest, LintSelectionRequest,
+        apply_corrections_descending, automatic_ignore_reason, classify_lints,
+        select_non_overlapping_lints,
+    };
+    use super::{CheckingProvider, HarperChecker, IgnoreReason};
+
+    use harper_core::linting::{Lint, LintKind, Suggestion};
 
     #[test]
     fn fixes_unambiguous_grammar_without_ai() {
@@ -435,9 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_ambiguous_and_missing_safe_suggestions() {
-        use harper_core::linting::Suggestion;
-
+    fn safe_lint_pipeline_classifies_orders_and_applies_findings() {
         let mut lint = Lint {
             lint_kind: LintKind::Grammar,
             ..Lint::default()
@@ -452,6 +224,47 @@ mod tests {
             automatic_ignore_reason(&lint),
             Some(IgnoreReason::Ambiguous)
         );
+
+        let late = Lint {
+            span: (2..5).into(),
+            lint_kind: LintKind::Grammar,
+            suggestions: vec![Suggestion::ReplaceWith("word".chars().collect())],
+            ..Lint::default()
+        };
+        let early = Lint {
+            span: (0..1).into(),
+            lint_kind: LintKind::Grammar,
+            suggestions: vec![Suggestion::ReplaceWith("Alpha".chars().collect())],
+            ..Lint::default()
+        };
+
+        let classified = classify_lints(LintClassificationRequest {
+            detected: vec![late, early],
+            lint_scope: 0..5,
+        });
+        let selected = select_non_overlapping_lints(LintSelectionRequest {
+            candidates: classified.candidates,
+            ignored: classified.ignored,
+        });
+
+        assert_eq!(
+            selected
+                .audit
+                .applied
+                .iter()
+                .map(|lint| lint.span.clone())
+                .collect::<Vec<_>>(),
+            [0..1, 2..5]
+        );
+        assert!(selected.audit.ignored.is_empty());
+
+        let corrected = apply_corrections_descending(CorrectionApplicationRequest {
+            source: "a def",
+            focus_end: 5,
+            selected: selected.for_application,
+        });
+        assert_eq!(corrected.text, "Alpha word");
+        assert_eq!(corrected.focus_end, 10);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+//! Stable-identity async channels that wake iced subscriptions on each event.
+
 use iced::Subscription;
 
 use std::hash::{Hash, Hasher};

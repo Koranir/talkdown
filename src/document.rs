@@ -1,3 +1,5 @@
+//! Authoritative editor content, UTF-8 snapshots, history, and trusted edits.
+
 use iced::widget::text_editor::{self, Content, Cursor, Position};
 
 use std::collections::VecDeque;
@@ -22,12 +24,86 @@ impl DocumentSnapshot {
     pub fn target_range(&self) -> Range<usize> {
         self.selection.clone().unwrap_or(self.cursor..self.cursor)
     }
+
+    fn capture(content: &Content, revision: u64) -> Self {
+        let text = content.text();
+        let cursor = content.cursor();
+        let caret = position_to_offset(content, cursor.position);
+        let selection = cursor.selection.map(|anchor| {
+            let anchor = position_to_offset(content, anchor);
+            anchor.min(caret)..anchor.max(caret)
+        });
+
+        Self {
+            text,
+            cursor: caret,
+            selection,
+            revision,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-struct BufferState {
+struct HistoryEntry {
     text: String,
     cursor: Cursor,
+}
+
+impl HistoryEntry {
+    fn capture(content: &Content) -> Self {
+        Self {
+            text: content.text(),
+            cursor: content.cursor(),
+        }
+    }
+
+    fn restore(self) -> Content {
+        let mut content = Content::with_text(&self.text);
+        content.move_to(self.cursor);
+        content
+    }
+
+    fn text_changed(&self, content: &Content) -> bool {
+        content.text() != self.text
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HistoryMode {
+    RecordNewEntry,
+    AmendLatestEntry,
+}
+
+#[derive(Debug, Default)]
+struct History {
+    undo: VecDeque<HistoryEntry>,
+    redo: VecDeque<HistoryEntry>,
+}
+
+impl History {
+    fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
+    fn record_change(&mut self, before: HistoryEntry, mode: HistoryMode) {
+        if matches!(mode, HistoryMode::RecordNewEntry) {
+            push_bounded(&mut self.undo, before);
+        }
+        self.redo.clear();
+    }
+
+    fn take_undo(&mut self, current: HistoryEntry) -> Option<HistoryEntry> {
+        let previous = self.undo.pop_back()?;
+        push_bounded(&mut self.redo, current);
+        Some(previous)
+    }
+
+    fn take_redo(&mut self, current: HistoryEntry) -> Option<HistoryEntry> {
+        let next = self.redo.pop_back()?;
+        push_bounded(&mut self.undo, current);
+        Some(next)
+    }
 }
 
 /// Owns iced's editor content plus the history and revision invariants needed
@@ -37,8 +113,7 @@ pub struct Document {
     content: Content,
     revision: u64,
     saved_text: String,
-    undo: VecDeque<BufferState>,
-    redo: VecDeque<BufferState>,
+    history: History,
 }
 
 impl Document {
@@ -51,8 +126,7 @@ impl Document {
             content: Content::with_text(text),
             revision: 0,
             saved_text: text.to_owned(),
-            undo: VecDeque::new(),
-            redo: VecDeque::new(),
+            history: History::default(),
         }
     }
 
@@ -73,20 +147,7 @@ impl Document {
     }
 
     pub fn snapshot(&self) -> DocumentSnapshot {
-        let text = self.content.text();
-        let cursor = self.content.cursor();
-        let caret = position_to_offset(&self.content, cursor.position);
-        let selection = cursor.selection.map(|anchor| {
-            let anchor = position_to_offset(&self.content, anchor);
-            anchor.min(caret)..anchor.max(caret)
-        });
-
-        DocumentSnapshot {
-            text,
-            cursor: caret,
-            selection,
-            revision: self.revision,
-        }
+        DocumentSnapshot::capture(&self.content, self.revision)
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -99,39 +160,30 @@ impl Document {
 
     pub fn reset(&mut self, text: &str) {
         self.content = Content::with_text(text);
-        self.revision = self.revision.wrapping_add(1);
         self.saved_text = text.to_owned();
-        self.undo.clear();
-        self.redo.clear();
+        self.history.clear();
+        self.advance_revision();
     }
 
     /// Performs a widget action. Editing actions are rejected unless the
     /// caller explicitly authorizes them; this is the second modal boundary
     /// that also catches IME and delayed clipboard edits.
     pub fn perform(&mut self, action: text_editor::Action, allow_edit: bool) -> bool {
-        if action.is_edit() && !allow_edit {
-            return false;
-        }
-
-        if action.is_edit() {
-            let before = self.capture_state();
+        if !action.is_edit() {
             self.content.perform(action);
-
-            if self.content.text() != before.text {
-                self.commit_change(before);
-                return true;
-            }
-
             return false;
         }
 
-        self.content.perform(action);
-        false
+        if !allow_edit {
+            return false;
+        }
+
+        self.perform_authorized_edit(action)
     }
 
     /// Applies a trusted replacement from the semantic edit pipeline.
     pub fn replace(&mut self, range: Range<usize>, replacement: &str) -> Result<(), ReplaceError> {
-        self.replace_inner(range, replacement, true, None)
+        self.replace_inner(range, replacement, HistoryMode::RecordNewEntry, None)
     }
 
     /// Refines the most recent optimistic dictation without adding a second
@@ -142,7 +194,7 @@ impl Document {
         range: Range<usize>,
         replacement: &str,
     ) -> Result<(), ReplaceError> {
-        self.replace_inner(range, replacement, false, None)
+        self.replace_inner(range, replacement, HistoryMode::AmendLatestEntry, None)
     }
 
     /// Refines the latest optimistic dictation over a wider context range while
@@ -153,75 +205,26 @@ impl Document {
         replacement: &str,
         cursor: usize,
     ) -> Result<(), ReplaceError> {
-        self.replace_inner(range, replacement, false, Some(cursor))
+        self.replace_inner(
+            range,
+            replacement,
+            HistoryMode::AmendLatestEntry,
+            Some(cursor),
+        )
     }
 
     fn replace_inner(
         &mut self,
         range: Range<usize>,
         replacement: &str,
-        record_history: bool,
+        history_mode: HistoryMode,
         requested_cursor: Option<usize>,
     ) -> Result<(), ReplaceError> {
-        let text = self.content.text();
-        validate_range(&text, &range)?;
+        let plan = ReplacementPlan::validate(&self.content, range, replacement, requested_cursor)?;
+        let before = HistoryEntry::capture(&self.content);
 
-        let expected = {
-            let mut expected = text.clone();
-            expected.replace_range(range.clone(), replacement);
-            expected
-        };
-        if let Some(cursor) = requested_cursor {
-            validate_range(&expected, &(cursor..cursor))?;
-            let expected_content = Content::with_text(&expected);
-            if position_to_offset(
-                &expected_content,
-                offset_to_position(&expected_content, cursor),
-            ) != cursor
-            {
-                return Err(ReplaceError::NotEditorBoundary);
-            }
-        }
-
-        let before = self.capture_state();
-        let start = offset_to_position(&self.content, range.start);
-        let end = offset_to_position(&self.content, range.end);
-        if position_to_offset(&self.content, start) != range.start
-            || position_to_offset(&self.content, end) != range.end
-        {
-            return Err(ReplaceError::NotEditorBoundary);
-        }
-
-        self.content.move_to(Cursor {
-            position: end,
-            selection: (range.start != range.end).then_some(start),
-        });
-        self.content
-            .perform(text_editor::Action::Edit(text_editor::Edit::Paste(
-                Arc::new(replacement.to_owned()),
-            )));
-
-        // Some editor backends treat an empty paste as a no-op. Rebuild in
-        // that case so deletion-only plans remain deterministic.
-        if self.content.text() != expected {
-            self.content = Content::with_text(&expected);
-        }
-
-        let new_cursor = requested_cursor.unwrap_or(range.start + replacement.len());
-        let position = offset_to_position(&self.content, new_cursor);
-        self.content.move_to(Cursor {
-            position,
-            selection: None,
-        });
-
-        if self.content.text() != before.text {
-            if record_history {
-                self.commit_change(before);
-            } else {
-                self.redo.clear();
-                self.revision = self.revision.wrapping_add(1);
-            }
-        }
+        plan.apply(&mut self.content);
+        self.finish_text_change(before, history_mode);
 
         Ok(())
     }
@@ -243,45 +246,45 @@ impl Document {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(previous) = self.undo.pop_back() else {
+        let current = HistoryEntry::capture(&self.content);
+        let Some(previous) = self.history.take_undo(current) else {
             return false;
         };
 
-        let current = self.capture_state();
-        push_bounded(&mut self.redo, current);
-        self.restore(previous);
-        self.revision = self.revision.wrapping_add(1);
+        self.content = previous.restore();
+        self.advance_revision();
         true
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(next) = self.redo.pop_back() else {
+        let current = HistoryEntry::capture(&self.content);
+        let Some(next) = self.history.take_redo(current) else {
             return false;
         };
 
-        let current = self.capture_state();
-        push_bounded(&mut self.undo, current);
-        self.restore(next);
-        self.revision = self.revision.wrapping_add(1);
+        self.content = next.restore();
+        self.advance_revision();
         true
     }
 
-    fn capture_state(&self) -> BufferState {
-        BufferState {
-            text: self.content.text(),
-            cursor: self.content.cursor(),
+    fn perform_authorized_edit(&mut self, action: text_editor::Action) -> bool {
+        let before = HistoryEntry::capture(&self.content);
+        self.content.perform(action);
+        self.finish_text_change(before, HistoryMode::RecordNewEntry)
+    }
+
+    fn finish_text_change(&mut self, before: HistoryEntry, history_mode: HistoryMode) -> bool {
+        if !before.text_changed(&self.content) {
+            return false;
         }
+
+        self.history.record_change(before, history_mode);
+        self.advance_revision();
+        true
     }
 
-    fn commit_change(&mut self, before: BufferState) {
-        push_bounded(&mut self.undo, before);
-        self.redo.clear();
+    fn advance_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
-    }
-
-    fn restore(&mut self, state: BufferState) {
-        self.content = Content::with_text(&state.text);
-        self.content.move_to(state.cursor);
     }
 }
 
@@ -299,7 +302,69 @@ pub enum ReplaceError {
     NotEditorBoundary,
 }
 
-fn validate_range(text: &str, range: &Range<usize>) -> Result<(), ReplaceError> {
+/// A replacement whose byte range and optional requested cursor have been
+/// translated into coordinates accepted by iced's editor.
+struct ReplacementPlan {
+    target_selection: Cursor,
+    replacement: Arc<String>,
+    expected_text: String,
+    final_cursor_offset: usize,
+}
+
+impl ReplacementPlan {
+    fn validate(
+        content: &Content,
+        range: Range<usize>,
+        replacement: &str,
+        requested_cursor: Option<usize>,
+    ) -> Result<Self, ReplaceError> {
+        let original_text = content.text();
+        validate_text_range(&original_text, &range)?;
+
+        let mut expected_text = original_text;
+        expected_text.replace_range(range.clone(), replacement);
+
+        if let Some(cursor) = requested_cursor {
+            let expected_content = Content::with_text(&expected_text);
+            validate_cursor_offset(&expected_text, &expected_content, cursor)?;
+        }
+
+        let start = exact_editor_position(content, range.start)?;
+        let end = exact_editor_position(content, range.end)?;
+        let final_cursor_offset = requested_cursor.unwrap_or(range.start + replacement.len());
+
+        Ok(Self {
+            target_selection: Cursor {
+                position: end,
+                selection: (range.start != range.end).then_some(start),
+            },
+            replacement: Arc::new(replacement.to_owned()),
+            expected_text,
+            final_cursor_offset,
+        })
+    }
+
+    fn apply(self, content: &mut Content) {
+        content.move_to(self.target_selection);
+        content.perform(text_editor::Action::Edit(text_editor::Edit::Paste(
+            self.replacement,
+        )));
+
+        // Some editor backends treat an empty paste as a no-op. Rebuild in
+        // that case so deletion-only plans remain deterministic.
+        if content.text() != self.expected_text {
+            *content = Content::with_text(&self.expected_text);
+        }
+
+        let final_cursor = offset_to_position(content, self.final_cursor_offset);
+        content.move_to(Cursor {
+            position: final_cursor,
+            selection: None,
+        });
+    }
+}
+
+fn validate_text_range(text: &str, range: &Range<usize>) -> Result<(), ReplaceError> {
     if range.start > range.end {
         return Err(ReplaceError::ReversedRange);
     }
@@ -312,7 +377,25 @@ fn validate_range(text: &str, range: &Range<usize>) -> Result<(), ReplaceError> 
     Ok(())
 }
 
-fn push_bounded(history: &mut VecDeque<BufferState>, state: BufferState) {
+fn validate_cursor_offset(
+    text: &str,
+    content: &Content,
+    cursor: usize,
+) -> Result<(), ReplaceError> {
+    validate_text_range(text, &(cursor..cursor))?;
+    exact_editor_position(content, cursor)?;
+    Ok(())
+}
+
+fn exact_editor_position(content: &Content, offset: usize) -> Result<Position, ReplaceError> {
+    let position = offset_to_position(content, offset);
+    if position_to_offset(content, position) != offset {
+        return Err(ReplaceError::NotEditorBoundary);
+    }
+    Ok(position)
+}
+
+fn push_bounded(history: &mut VecDeque<HistoryEntry>, state: HistoryEntry) {
     if history.len() == HISTORY_LIMIT {
         history.pop_front();
     }
@@ -424,20 +507,48 @@ mod tests {
             Err(ReplaceError::NotEditorBoundary)
         );
         assert_eq!(document.text(), "one\r\ntwo");
+        assert_eq!(document.revision(), 0);
+
+        assert_eq!(
+            document.amend_last_replace_with_cursor(0..8, "one\r\ntwo", 4),
+            Err(ReplaceError::NotEditorBoundary)
+        );
+        assert_eq!(document.text(), "one\r\ntwo");
+
+        let mut unicode = Document::with_text("é");
+        assert_eq!(
+            unicode.replace(1..2, "e"),
+            Err(ReplaceError::NotCharacterBoundary)
+        );
+        let reversed = Range { start: 2, end: 1 };
+        assert_eq!(
+            unicode.replace(reversed, "e"),
+            Err(ReplaceError::ReversedRange)
+        );
+        assert_eq!(unicode.replace(0..3, "e"), Err(ReplaceError::OutOfBounds));
+        assert_eq!(unicode.text(), "é");
     }
 
     #[test]
     fn undo_and_redo_restore_text_and_cursor() {
         let mut document = Document::with_text("hello");
         document.replace(5..5, " world").unwrap();
+        assert_eq!(document.revision(), 1);
 
         assert!(document.undo());
         assert_eq!(document.text(), "hello");
         assert_eq!(document.snapshot().cursor, 0);
+        assert_eq!(document.revision(), 2);
 
         assert!(document.redo());
         assert_eq!(document.text(), "hello world");
         assert_eq!(document.snapshot().cursor, 11);
+        assert_eq!(document.revision(), 3);
+
+        assert!(document.undo());
+        document.replace(5..5, "!").unwrap();
+        assert!(!document.redo());
+        assert_eq!(document.text(), "hello!");
     }
 
     #[test]
@@ -477,5 +588,7 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(document.text(), "safe");
+        assert_eq!(document.revision(), 0);
+        assert!(!document.undo());
     }
 }

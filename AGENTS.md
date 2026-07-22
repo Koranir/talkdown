@@ -87,28 +87,43 @@ Optimize in this order:
 
 ## Architecture map
 
-- `src/app.rs`: iced state/update/view, custom palette, typography/application
-  scale, contextual tooltips, atomic steady-caret operation, typed notices,
-  modal key bindings, file lifecycle, speech/Codex orchestration, optimistic
-  insertion, and stale-result policy.
-- `src/checker.rs`: persisted checking-provider choice and the conservative,
-  reusable Harper auto-fix pipeline plus its applied/ignored decision records.
+- `src/app.rs`: iced state/message contracts, construction, subscriptions,
+  ordered modal shielding, semantic routing, and shared notice policy.
+- `src/app/`: focused application concerns: `editor.rs` owns editor/mode/zoom
+  transitions; `settings.rs` owns staged preferences and model provisioning;
+  `voice.rs` owns capture and Speech events; `semantic.rs` owns optimistic
+  checking plus locally validated Codex transactions; `file_lifecycle.rs` owns
+  generation-guarded file/watcher state; `view.rs` and `view/` own window,
+  Settings, and safety-modal composition; `ui.rs` owns palette/styles;
+  `presentation.rs` owns pure bounded-copy and checker-audit display formatting;
+  `input.rs` owns modal bindings and atomic steady-caret maintenance;
+  `transcription.rs` owns UTF-8-safe dictation helpers; `file_io.rs` owns native
+  dialog/disk adapters; and `tests.rs` owns the whole-app regression harness.
+- `src/checker.rs` and `src/checker/`: provider/result/audit facade plus the
+  staged conservative Harper implementation in `harper.rs`: scoped
+  classification, overlap selection, correction application, seam
+  normalization, and applied/ignored audit.
 - `src/document.rs`: iced content wrapper, UTF-8 cursor/selection snapshots,
-  history, trusted replacement, one-step refinement amendment.
-- `src/edit.rs`: tiny Codex edit language and exact-target resolution.
+  bounded history transitions, validated replacement plans, and one-step
+  refinement amendment.
+- `src/edit.rs`: tiny Codex edit language plus separated insertion, selection,
+  nearest-target, and stale exact-target resolution.
 - `src/event_stream.rs`: async-waking worker-to-iced event channels with stable
   subscription identities and deterministic nonblocking test drains.
 - `src/file_watch.rs`: bounded OS file-watcher events and parent-directory watch
   management that survives atomic file replacement.
-- `src/model.rs`: platform paths, atomically persisted speech/checker/Codex
-  preferences, pinned default-model metadata, verified download, progress, and
-  cancellation.
-- `src/codex.rs`: persistent JSONL app-server child, auth guard, paginated model
-  discovery, selected-model thread start, prompt/context construction, output
-  schema, and streamed events.
-- `src/speech.rs`: microphone callback, bounded audio channel, resampling,
-  utterance-tagged capture, separate latest-wins rolling Whisper decoder,
-  partial/final events.
+- `src/model.rs` and `src/model/`: stable model facade and metadata;
+  `preferences.rs` owns platform paths, precedence, normalization, and atomic
+  speech/checker/Codex preference writes; `download.rs` owns cancellation,
+  staged transfer, progress, size/SHA verification, and atomic installation.
+- `src/codex.rs` and `src/codex/`: reconnecting bridge facade;
+  `context.rs` owns bounded prompt construction and editable-context limits;
+  `app_server.rs` owns the persistent JSONL child, auth guard, paginated model
+  discovery, selected-model thread, turn correlation, and streamed events.
+- `src/speech.rs` and `src/speech/`: bridge facade and worker lifecycle;
+  `whisper/input.rs` owns the bounded real-time audio seam,
+  `whisper/capture.rs` owns utterance-tagged buffers and partial scheduling,
+  and `whisper/decoder.rs` owns resampling and final-biased inference queues.
 - `docs/architecture.md`: invariants and end-to-end flows.
 - `docs/development.md`: setup, commands, dependency update procedures.
 - `docs/roadmap.md`: deliberately unfinished work and milestone order.
@@ -173,7 +188,8 @@ Optimize in this order:
 
 ### UI and failure reporting
 
-- Keep the custom palette and widget styles centralized in `app.rs::ui`.
+- Keep the custom palette and widget styles centralized in `app::ui`
+  (`src/app/ui.rs`).
   `Talkdown Carbon` uses near-black `#151515`, editor `#191919`, and raised
   `#222222` surfaces with `#414141` borders; neutral text is `#C9C9C9`,
   `#999999`, and `#8C8C8C`. Hot magenta `#FF0095` with dark wine `#26000F`
@@ -187,7 +203,8 @@ Optimize in this order:
   caption/body/lead sizes. Named families and the user's monospace preference
   currently resolve through the host; do not claim
   cross-platform pixel identity until licensed font assets are bundled.
-- Keep recurring widget structure in the component functions beside the view:
+- Keep recurring widget structure in the component functions beside the view in
+  `src/app/view.rs` and `src/app/view/settings.rs`:
   `button_label`, `fixed_button_label`, `quiet_toolbar_button`,
   `settings_section_label`, `settings_preference`, `settings_model_preference`,
   `settings_action_button`, and `settings_scale_controls`. Extend these components when another instance
@@ -392,9 +409,9 @@ Before a substantial edit:
 3. Keep deterministic logic in `document.rs` or `edit.rs` and cover it with unit
    tests before adding UI branches.
 4. For modal or widget behavior, extend the isolated `iced_test::Simulator`
-   harness in `app.rs`. Use intercepted bridges for deterministic whole-app
-   behavior; only explicitly ignored integration tests may launch native audio,
-   real Whisper, or live Codex work.
+   harness in `src/app/tests.rs`. Use intercepted bridges for deterministic
+   whole-app behavior; only explicitly ignored integration tests may launch
+   native audio, real Whisper, or live Codex work.
 5. Use current iced source at the pinned commit when an API is uncertain.
 6. Generate app-server schemas from the installed CLI when its wire shape is
    uncertain; do not guess.
