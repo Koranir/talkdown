@@ -74,6 +74,7 @@ impl App {
                     Icon::FilePlus2,
                     "New",
                     "Blank document",
+                    None,
                     (!self.file_busy).then_some(Message::NewFile),
                     false,
                 ),
@@ -81,7 +82,8 @@ impl App {
                     OPEN_BUTTON_ID,
                     Icon::FolderOpen,
                     "Open",
-                    "Ctrl/Cmd+O",
+                    "Open an existing document",
+                    Some(("Ctrl / Cmd + O", "Open")),
                     (!self.file_busy).then_some(Message::OpenFile),
                     false,
                 ),
@@ -89,7 +91,8 @@ impl App {
                     SAVE_BUTTON_ID,
                     Icon::Save,
                     "Save",
-                    "Ctrl/Cmd+S",
+                    "Write changes to disk",
+                    Some(("Ctrl / Cmd + S", "Save")),
                     (!self.file_busy).then_some(Message::SaveFile),
                     dirty,
                 ),
@@ -97,7 +100,8 @@ impl App {
                     SAVE_AS_BUTTON_ID,
                     Icon::SaveAll,
                     "Save as",
-                    "Ctrl/Cmd+Shift+S",
+                    "Save under a new name",
+                    Some(("Ctrl / Cmd + Shift + S", "Save as")),
                     (!self.file_busy).then_some(Message::SaveFileAs),
                     false,
                 ),
@@ -132,6 +136,7 @@ impl App {
             help_title,
             help_detail,
             None,
+            None,
             tooltip::Position::Bottom,
         )
     }
@@ -153,7 +158,7 @@ impl App {
     }
 
     fn settings_toolbar_control(&self) -> Element<'static, Message> {
-        let (can_open, help) = self.settings_availability();
+        let (can_open, help, shortcut) = self.settings_availability();
 
         container(contextual_tooltip(
             icon_button(
@@ -163,6 +168,7 @@ impl App {
             ),
             "Settings",
             help,
+            shortcut.map(|key| (key, "Open settings")),
             None,
             tooltip::Position::Bottom,
         ))
@@ -170,21 +176,21 @@ impl App {
         .into()
     }
 
-    fn settings_availability(&self) -> (bool, &'static str) {
+    pub(super) fn settings_availability(&self) -> (bool, &'static str, Option<&'static str>) {
         if self.active_utterance.is_some() {
-            return (false, "Finish the recording first");
+            return (false, "Finish the recording first", None);
         }
         if self.mode == Mode::Command {
-            return (false, "Finish the command first");
+            return (false, "Finish the command first", None);
         }
         if self.file_busy {
-            return (false, "File action in progress");
+            return (false, "File action in progress", None);
         }
         if !self.pending.is_empty() {
-            return (false, "Codex edit in progress");
+            return (false, "Codex edit in progress", None);
         }
 
-        (true, "Ctrl/Cmd+,")
+        (true, "Edit app preferences", Some("Ctrl / Cmd + ,"))
     }
 
     fn notice_banner(&self) -> Element<'_, Message> {
@@ -243,6 +249,7 @@ impl App {
                 ),
                 if has_next { "Next issue" } else { "Dismiss" },
                 "",
+                None,
                 None,
                 tooltip::Position::Top,
             ));
@@ -429,6 +436,7 @@ impl App {
             "Insert last",
             help,
             None,
+            None,
             tooltip::Position::Top,
         )
     }
@@ -455,13 +463,13 @@ impl App {
             .width(FillPortion(1))
             .align_x(Center),
             container(
-                text("I insert · : cmd · +/- text")
-                    .width(Fill)
-                    .font(EDITOR_FONT)
-                    .size(CAPTION_SIZE)
-                    .align_x(Right)
-                    .wrapping(iced::widget::text::Wrapping::None)
-                    .color(ui::SUBTLE),
+                row![
+                    shortcut_hint("I", "Insert"),
+                    shortcut_hint(":", "Command"),
+                    shortcut_hint("+ / -", "Text zoom"),
+                ]
+                .spacing(8)
+                .align_y(Center),
             )
             .width(FillPortion(1))
             .align_x(Right),
@@ -512,6 +520,7 @@ impl App {
             } else {
                 "No changes"
             },
+            None,
             None,
             tooltip::Position::Top,
         )
@@ -780,6 +789,7 @@ fn toolbar_action(
     icon: Icon,
     title: &'static str,
     detail: &'static str,
+    shortcut: Option<(&'static str, &'static str)>,
     on_press: Option<Message>,
     primary: bool,
 ) -> Element<'static, Message> {
@@ -787,6 +797,7 @@ fn toolbar_action(
         icon_button(icon, on_press, primary),
         title,
         detail,
+        shortcut,
         None,
         tooltip::Position::Bottom,
     ))
@@ -794,16 +805,34 @@ fn toolbar_action(
     .into()
 }
 
-fn shortcut_hint(key: &'static str, action: &'static str) -> Element<'static, Message> {
+fn shortcut_hint<'a>(key: &'a str, action: &'a str) -> Element<'a, Message> {
+    let keycaps = key
+        .split_whitespace()
+        .enumerate()
+        .fold(row![], |keycaps, (index, part)| {
+            if part == "/" || (part == "+" && index > 0) {
+                keycaps.push(
+                    text(part)
+                        .font(EDITOR_FONT)
+                        .size(CAPTION_SIZE)
+                        .color(ui::SUBTLE),
+                )
+            } else {
+                keycaps.push(
+                    container(
+                        text(part)
+                            .font(EDITOR_FONT)
+                            .size(CAPTION_SIZE)
+                            .color(ui::TEXT),
+                    )
+                    .padding([3, 6])
+                    .style(ui::keycap),
+                )
+            }
+        });
+
     row![
-        container(
-            text(key)
-                .font(EDITOR_FONT)
-                .size(CAPTION_SIZE)
-                .color(ui::TEXT),
-        )
-        .padding([3, 6])
-        .style(ui::keycap),
+        keycaps.spacing(2).align_y(Center),
         text(action)
             .font(UI_FONT)
             .size(CAPTION_SIZE)
@@ -818,6 +847,7 @@ fn contextual_tooltip<'a>(
     target: impl Into<Element<'a, Message>>,
     title: &'a str,
     detail: &'a str,
+    shortcut: Option<(&'a str, &'a str)>,
     recovery: Option<&'a str>,
     position: tooltip::Position,
 ) -> Element<'a, Message> {
@@ -838,6 +868,10 @@ fn contextual_tooltip<'a>(
                 .line_height(1.25)
                 .color(ui::SECONDARY),
         );
+    }
+
+    if let Some((key, action)) = shortcut {
+        copy = copy.push(shortcut_hint(key, action));
     }
 
     if let Some(recovery) = recovery {
@@ -944,6 +978,7 @@ fn service_chip<'a>(
             _ => name,
         },
         detail,
+        None,
         recovery,
         tooltip::Position::Top,
     )

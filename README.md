@@ -1,3 +1,6 @@
+> [!WARNING]
+> This repository was mostly AI generated.
+
 # Talkdown
 
 Talkdown is a modal, voice-first text editor built with `iced`. Normal mode is

@@ -1314,7 +1314,11 @@ fn iced_minimum_window_snapshot() -> Result<(), Error> {
         "Insert last",
         "SAVED",
         "Ln 4, Col 1",
-        "I insert · : cmd · +/- text",
+        "I",
+        "Insert",
+        ":",
+        "Command",
+        "Text zoom",
     ] {
         let target = ui.find(label)?;
         let bounds = target.bounds();
@@ -1937,6 +1941,7 @@ fn harper_records_ignored_findings_and_surfaces_the_audit() -> Result<(), Error>
         let _ = ui.find(id(CHECKER_REVIEW_SCROLL_ID))?;
         let _ = ui.find(id(CHECKER_REVIEW_CLOSE_ID))?;
         let _ = ui.find(id(CHECKER_REVIEW_FIRST_APPLY_ID))?;
+        let _ = ui.find(id(CHECKER_REVIEW_FIRST_ALWAYS_APPLY_ID))?;
         let _ = ui.find(id(CHECKER_REVIEW_FIRST_IGNORE_ID))?;
         let _ = ui.find(id(CHECKER_REVIEW_FIRST_IGNORE_KIND_ID))?;
     }
@@ -2370,6 +2375,22 @@ fn routine_guidance_is_contextual_instead_of_a_banner() -> Result<(), Error> {
     let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
     let _ = ui.find("File needs attention")?;
     Ok(())
+}
+
+#[test]
+fn settings_shortcut_is_only_shown_when_the_control_is_available() {
+    let (mut app, _speech, _codex) = test_app("");
+
+    assert_eq!(
+        app.settings_availability(),
+        (true, "Edit app preferences", Some("Ctrl / Cmd + ,"))
+    );
+
+    app.mode = Mode::Command;
+    assert_eq!(
+        app.settings_availability(),
+        (false, "Finish the command first", None)
+    );
 }
 
 #[test]

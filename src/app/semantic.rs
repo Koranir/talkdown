@@ -5,8 +5,8 @@ use super::transcription::{
     char_offset_to_byte, fit_literal, harper_context_range, next_char_boundary,
 };
 use super::{
-    App, CheckerIgnoreScope, CheckerIgnoredLint, CheckerReview, CheckerReviewLint, Message, Notice,
-    NoticeSource, PendingEdit, UiState,
+    App, CheckerAlwaysApplyRule, CheckerIgnoreScope, CheckerIgnoredLint, CheckerReview,
+    CheckerReviewLint, Message, Notice, NoticeSource, PendingEdit, UiState,
 };
 
 use crate::checker::{CheckResult, CheckingProvider, IgnoreReason};
@@ -228,7 +228,13 @@ impl App {
 
         if applied {
             let reviewed_range = plan.context_range.start..plan.context_range.start + text.len();
-            self.capture_checker_review(reviewed_range, Vec::new(), Vec::new(), Vec::new());
+            self.capture_checker_review(
+                reviewed_range,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
         }
     }
 
@@ -273,6 +279,7 @@ impl App {
         manually_applied: Vec<crate::checker::LintRecord>,
         ignored_lints: Vec<crate::checker::LintRecord>,
         ignored_kinds: Vec<harper_core::linting::LintKind>,
+        always_apply: Vec<CheckerAlwaysApplyRule>,
     ) {
         let snapshot = self.document.snapshot();
         let Some(context_text) = snapshot.text.get(context_range.clone()).map(str::to_owned) else {
@@ -331,6 +338,7 @@ impl App {
             manually_applied,
             ignored_lints,
             ignored_kinds,
+            always_apply,
             ignored,
             lints: review_lints,
         });
@@ -408,6 +416,7 @@ impl App {
             replacement.chars().count(),
         );
         let ignored_kinds = review.ignored_kinds.clone();
+        let always_apply = review.always_apply.clone();
         let replaced_len = replace_range.end - replace_range.start;
         let new_context_end = if replacement.len() >= replaced_len {
             context_range.end + (replacement.len() - replaced_len)
@@ -419,8 +428,44 @@ impl App {
             manually_applied,
             ignored_lints,
             ignored_kinds,
+            always_apply,
         );
         Task::none()
+    }
+
+    pub(super) fn always_apply_checker_suggestion(
+        &mut self,
+        lint_index: usize,
+        suggestion_index: usize,
+    ) -> Task<Message> {
+        let Some(review) = self.checker_review.as_mut() else {
+            return Task::none();
+        };
+        let Some(lint) = review.lints.get(lint_index) else {
+            return Task::none();
+        };
+        let Some(suggestion) = lint.lint.suggestions.get(suggestion_index) else {
+            return Task::none();
+        };
+        let rule = CheckerAlwaysApplyRule {
+            kind: lint.lint.kind,
+            message: lint.lint.message.clone(),
+            suggestion: suggestion.clone(),
+        };
+        if !review.always_apply.contains(&rule) {
+            review.always_apply.push(rule);
+        }
+
+        let task = self.apply_checker_suggestion(lint_index, suggestion_index);
+        for _ in 0..16 {
+            let Some((next_lint, next_suggestion)) =
+                self.checker_review.as_ref().and_then(matching_session_rule)
+            else {
+                break;
+            };
+            let _ = self.apply_checker_suggestion(next_lint, next_suggestion);
+        }
+        task
     }
 
     pub(super) fn ignore_checker_lint(&mut self, lint_index: usize) -> Task<Message> {
@@ -448,6 +493,7 @@ impl App {
             review.manually_applied.clone(),
             ignored_lints,
             review.ignored_kinds.clone(),
+            review.always_apply.clone(),
         );
         Task::none()
     }
@@ -477,6 +523,7 @@ impl App {
             review.manually_applied.clone(),
             review.ignored_lints.clone(),
             ignored_kinds,
+            review.always_apply.clone(),
         );
         Task::none()
     }
@@ -1020,6 +1067,24 @@ fn checker_review_summary(applied: usize, remaining: usize, ignored: usize) -> S
     format!(
         "Latest check · {applied} applied · {remaining} to review · {ignored} ignored. Click to inspect."
     )
+}
+
+fn matching_session_rule(review: &CheckerReview) -> Option<(usize, usize)> {
+    review
+        .lints
+        .iter()
+        .enumerate()
+        .find_map(|(lint_index, lint)| {
+            review.always_apply.iter().find_map(|rule| {
+                (rule.kind == lint.lint.kind && rule.message == lint.lint.message).then(|| {
+                    lint.lint
+                        .suggestions
+                        .iter()
+                        .position(|suggestion| suggestion == &rule.suggestion)
+                        .map(|suggestion_index| (lint_index, suggestion_index))
+                })?
+            })
+        })
 }
 
 fn remap_ignored_lints_after_edit(

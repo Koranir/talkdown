@@ -74,6 +74,7 @@ const CHECKER_REVIEW_CLOSE_ID: &str = "talkdown-checker-review-close";
 const CHECKER_REVIEW_FIRST_APPLY_ID: &str = "talkdown-checker-review-first-apply";
 const CHECKER_REVIEW_FIRST_IGNORE_ID: &str = "talkdown-checker-review-first-ignore";
 const CHECKER_REVIEW_FIRST_IGNORE_KIND_ID: &str = "talkdown-checker-review-first-ignore-kind";
+const CHECKER_REVIEW_FIRST_ALWAYS_APPLY_ID: &str = "talkdown-checker-review-first-always-apply";
 const SETTINGS_BUTTON_ID: &str = "talkdown-settings-button";
 const SETTINGS_MODAL_ID: &str = "talkdown-settings-modal";
 const SETTINGS_SCROLL_ID: &str = "talkdown-settings-scroll";
@@ -416,6 +417,10 @@ enum Message {
     IgnoreCheckerKind {
         lint_index: usize,
     },
+    AlwaysApplyCheckerSuggestion {
+        lint_index: usize,
+        suggestion_index: usize,
+    },
 
     // Window maintenance.
     RefreshNormalCursor,
@@ -477,6 +482,7 @@ impl Message {
                 | Self::ApplyCheckerSuggestion { .. }
                 | Self::IgnoreCheckerLint { .. }
                 | Self::IgnoreCheckerKind { .. }
+                | Self::AlwaysApplyCheckerSuggestion { .. }
                 | Self::WindowCloseRequested(_)
                 | Self::GlobalEscape
         ) || self.is_modal_maintenance_event()
@@ -519,6 +525,13 @@ struct CheckerIgnoredLint {
     scope: CheckerIgnoreScope,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckerAlwaysApplyRule {
+    kind: harper_core::linting::LintKind,
+    message: String,
+    suggestion: crate::checker::LintSuggestion,
+}
+
 #[derive(Debug, Clone)]
 struct CheckerReview {
     buffer_generation: u64,
@@ -529,6 +542,7 @@ struct CheckerReview {
     manually_applied: Vec<LintRecord>,
     ignored_lints: Vec<LintRecord>,
     ignored_kinds: Vec<harper_core::linting::LintKind>,
+    always_apply: Vec<CheckerAlwaysApplyRule>,
     ignored: Vec<CheckerIgnoredLint>,
     lints: Vec<CheckerReviewLint>,
 }
@@ -978,6 +992,10 @@ impl App {
             } => self.apply_checker_suggestion(lint_index, suggestion_index),
             Message::IgnoreCheckerLint { lint_index } => self.ignore_checker_lint(lint_index),
             Message::IgnoreCheckerKind { lint_index } => self.ignore_checker_kind(lint_index),
+            Message::AlwaysApplyCheckerSuggestion {
+                lint_index,
+                suggestion_index,
+            } => self.always_apply_checker_suggestion(lint_index, suggestion_index),
 
             // Window and worker maintenance (also allowed through modal shields).
             Message::RefreshNormalCursor => self.refresh_normal_cursor(),

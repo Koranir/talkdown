@@ -125,7 +125,10 @@ replacement. Each Apply is revision-checked, undoable, and followed by a fresh
 local lint pass. Ignore once filters one exact current finding; Ignore kind
 filters that category through subsequent passes in the same review. Both remain
 visible under `IGNORED · THIS REVIEW`, mutate no document text, and disappear
-when a new review replaces the current one. Never persist or externally log that audit or review
+when a new review replaces the current one. The `Always` control applies the
+chosen suggestion through the same trusted path and repeats that exact
+kind/message/suggestion choice for matching findings while the review remains
+open; it is session-only and never creates a saved preference. Never persist or externally log that audit or review
 state because Harper messages can repeat dictated text. Choosing Codex enables
 the richer context-aware refinement path. Contextual commands always use Codex.
 The Codex choices come from the connected app-server's `model/list` response;
@@ -265,8 +268,8 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 88 tests: 75 run and thirteen are
-ignored. The no-default-feature build discovers 81: 71 run and ten are
+The default-feature build currently discovers 89 tests: 76 run and thirteen are
+ignored. The no-default-feature build discovers 82: 72 run and ten are
 ignored. The README lists all thirteen ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a

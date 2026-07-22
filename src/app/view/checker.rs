@@ -1,12 +1,13 @@
 //! Scrollable, local-only Harper lint review.
 
-use super::{lucide_icon, ui};
+use super::{contextual_tooltip, lucide_icon, ui};
 use crate::app::presentation::compact_copy;
 use crate::app::{
-    BODY_SIZE, CAPTION_SIZE, CHECKER_REVIEW_CLOSE_ID, CHECKER_REVIEW_FIRST_APPLY_ID,
-    CHECKER_REVIEW_FIRST_IGNORE_ID, CHECKER_REVIEW_FIRST_IGNORE_KIND_ID, CHECKER_REVIEW_MODAL_ID,
-    CHECKER_REVIEW_SCROLL_ID, CheckerIgnoreScope, CheckerIgnoredLint, CheckerReview,
-    CheckerReviewLint, LEAD_SIZE, Message, UI_BOLD_FONT, UI_FONT, UI_SEMIBOLD_FONT,
+    BODY_SIZE, CAPTION_SIZE, CHECKER_REVIEW_CLOSE_ID, CHECKER_REVIEW_FIRST_ALWAYS_APPLY_ID,
+    CHECKER_REVIEW_FIRST_APPLY_ID, CHECKER_REVIEW_FIRST_IGNORE_ID,
+    CHECKER_REVIEW_FIRST_IGNORE_KIND_ID, CHECKER_REVIEW_MODAL_ID, CHECKER_REVIEW_SCROLL_ID,
+    CheckerIgnoreScope, CheckerIgnoredLint, CheckerReview, CheckerReviewLint, LEAD_SIZE, Message,
+    UI_BOLD_FONT, UI_FONT, UI_SEMIBOLD_FONT,
 };
 use crate::checker::LintRecord;
 
@@ -240,6 +241,7 @@ fn review_body(review: CheckerReview) -> Element<'static, Message> {
         );
     } else {
         let mut first_action = true;
+        let mut first_always = true;
         let mut first_ignore = true;
         let mut first_ignore_kind = true;
         for (lint_index, lint) in review.lints.into_iter().enumerate() {
@@ -248,6 +250,7 @@ fn review_body(review: CheckerReview) -> Element<'static, Message> {
                 lint_index,
                 &review.context_text,
                 &mut first_action,
+                &mut first_always,
                 &mut first_ignore,
                 &mut first_ignore_kind,
             );
@@ -336,6 +339,7 @@ fn review_card(
     lint_index: usize,
     context: &str,
     first_action: &mut bool,
+    first_always: &mut bool,
     first_ignore: &mut bool,
     first_ignore_kind: &mut bool,
 ) -> Element<'static, Message> {
@@ -379,7 +383,38 @@ fn review_card(
             } else {
                 action.into()
             };
-            actions = actions.push(action);
+            let always = button(
+                container(lucide_icon(Icon::Repeat2, BODY_SIZE, ui::SECONDARY))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Center)
+                    .align_y(Center),
+            )
+            .width(34)
+            .height(34)
+            .padding(0)
+            .style(ui::quiet_button)
+            .on_press(Message::AlwaysApplyCheckerSuggestion {
+                lint_index,
+                suggestion_index,
+            });
+            let always = contextual_tooltip(
+                always,
+                "Always apply",
+                "Apply this replacement for this review.",
+                None,
+                None,
+                iced::widget::tooltip::Position::Top,
+            );
+            let always: Element<'static, Message> = if *first_always {
+                *first_always = false;
+                container(always)
+                    .id(CHECKER_REVIEW_FIRST_ALWAYS_APPLY_ID)
+                    .into()
+            } else {
+                always
+            };
+            actions = actions.push(row![action, always].spacing(6).align_y(Center));
         }
     }
 
