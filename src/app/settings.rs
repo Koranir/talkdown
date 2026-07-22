@@ -72,16 +72,10 @@ impl App {
     pub(super) fn refresh_checker_status(&mut self) {
         self.checker_status = match self.checking_provider {
             CheckingProvider::Harper => self.last_harper_audit.as_ref().map_or_else(
-                || {
-                    "Harper is ready. Applied and ignored findings from the latest local check will appear here."
-                        .to_owned()
-                },
+                || "Harper ready · checks stay local.".to_owned(),
                 lint_audit_summary,
             ),
-            CheckingProvider::Codex => {
-                "Codex checks literal dictation with document context. Local Harper lint records are paused; contextual commands also use Codex."
-                    .to_owned()
-            }
+            CheckingProvider::Codex => "Codex checks dictation and commands.".to_owned(),
         };
     }
 

@@ -1,6 +1,6 @@
 //! Harper-backed local dictation checking and deterministic correction stages.
 
-use super::{CheckResult, IgnoreReason, IgnoredLint, LintAudit, LintRecord};
+use super::{CheckResult, IgnoreReason, IgnoredLint, LintAudit, LintRecord, LintSuggestion};
 
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::parsers::PlainEnglish;
@@ -47,6 +47,20 @@ impl HarperChecker {
         });
 
         merge_seam_fixes_into_audit(result, seams.applied_fixes)
+    }
+
+    /// Returns every current finding in a bounded review context without
+    /// changing the supplied text or applying the automatic-checking policy.
+    pub fn review(&mut self, source: &str) -> Vec<LintRecord> {
+        let document = HarperDocument::new_curated(source, &PlainEnglish);
+        let mut findings = self
+            .linter
+            .lint(&document)
+            .iter()
+            .map(lint_record)
+            .collect::<Vec<_>>();
+        findings.sort_by_key(|lint| (lint.span.start, lint.span.end));
+        findings
     }
 
     fn check_scoped(&mut self, request: ScopedCheckRequest<'_>) -> CheckResult {
@@ -349,7 +363,7 @@ fn seam_lint(position: usize, seam: DictationSeam) -> LintRecord {
         span: position..position,
         kind: LintKind::Punctuation,
         message: format!("Missing whitespace {side} the transcribed text."),
-        suggestions: vec!["Insert “ ”".into()],
+        suggestions: vec![LintSuggestion::InsertAfter(" ".into())],
     }
 }
 
@@ -397,7 +411,19 @@ fn lint_record(lint: &Lint) -> LintRecord {
         span: lint.span.start..lint.span.end,
         kind: lint.lint_kind,
         message: lint.message.clone(),
-        suggestions: lint.suggestions.iter().map(ToString::to_string).collect(),
+        suggestions: lint.suggestions.iter().map(lint_suggestion).collect(),
+    }
+}
+
+fn lint_suggestion(suggestion: &Suggestion) -> LintSuggestion {
+    match suggestion {
+        Suggestion::ReplaceWith(characters) => {
+            LintSuggestion::ReplaceWith(characters.iter().collect())
+        }
+        Suggestion::InsertAfter(characters) => {
+            LintSuggestion::InsertAfter(characters.iter().collect())
+        }
+        Suggestion::Remove => LintSuggestion::Remove,
     }
 }
 
@@ -424,5 +450,7 @@ fn safe_for_automatic_dictation(kind: LintKind) -> bool {
             | LintKind::Punctuation
             | LintKind::Repetition
             | LintKind::Typo
+            | LintKind::Malapropism
+            | LintKind::Redundancy
     )
 }

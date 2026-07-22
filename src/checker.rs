@@ -80,7 +80,42 @@ pub struct LintRecord {
     pub span: Range<usize>,
     pub kind: LintKind,
     pub message: String,
-    pub suggestions: Vec<String>,
+    pub suggestions: Vec<LintSuggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LintSuggestion {
+    ReplaceWith(String),
+    InsertAfter(String),
+    Remove,
+}
+
+impl LintSuggestion {
+    pub fn edit(&self, span: &Range<usize>) -> (Range<usize>, String) {
+        match self {
+            Self::ReplaceWith(replacement) => (span.clone(), replacement.clone()),
+            Self::InsertAfter(replacement) => (span.end..span.end, replacement.clone()),
+            Self::Remove => (span.clone(), String::new()),
+        }
+    }
+
+    pub fn action_label(&self) -> String {
+        match self {
+            Self::ReplaceWith(replacement) => format!("Use “{replacement}”"),
+            Self::InsertAfter(replacement) => format!("Insert “{replacement}”"),
+            Self::Remove => "Remove".into(),
+        }
+    }
+}
+
+impl fmt::Display for LintSuggestion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReplaceWith(replacement) => write!(formatter, "Replace with: “{replacement}”"),
+            Self::InsertAfter(replacement) => write!(formatter, "Insert “{replacement}”"),
+            Self::Remove => formatter.write_str("Remove error"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,7 +173,10 @@ mod tests {
         assert!(result.audit.ignored.is_empty());
         assert_eq!(result.audit.applied[0].kind, LintKind::Miscellaneous);
         assert_eq!(result.audit.applied[0].span, 8..10);
-        assert_eq!(result.audit.applied[0].suggestions, ["Replace with: “a”"]);
+        assert_eq!(
+            result.audit.applied[0].suggestions[0].to_string(),
+            "Replace with: “a”"
+        );
     }
 
     #[test]

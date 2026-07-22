@@ -121,6 +121,11 @@ keys into commands or ignore them. A second boundary lives in
 `Document::perform`: editing actions are accepted only when the caller says the
 mode is Insert.
 
+The binding filter delegates conventional arrow, Home, End, Page Up, and Page
+Down combinations to iced before interpreting application command shortcuts.
+This preserves platform-native word/document jumps and Shift-selection in both
+Normal and Insert modes without weakening Normal mode's document edit gate.
+
 The second check is essential. Current iced routes IME commits and the result of
 an asynchronous clipboard read directly as `Action::Edit`, bypassing the key
 binding closure.
@@ -152,9 +157,10 @@ three semantic roles: system-resolved Atkinson Hyperlegible Next Regular,
 Semibold, and Bold for accessible application chrome; Libertinus Sans for
 transcript and typed-command natural language; and the host/user-selected
 generic monospace family for the document, status, and cursor metadata. A
+bundled Lucide icon font supplies a restrained set of action and state glyphs. A
 strict logical scale of 11 px captions,
 14 px body/control copy, and 17 px lead/editor text keeps hierarchy consistent.
-The fonts are not bundled, so iced may resolve a host fallback and pixel output
+The text fonts are not bundled, so iced may resolve a host fallback and pixel output
 is host-dependent. Base16 Ocean supplies syntax colors independently of the
 application palette.
 
@@ -171,6 +177,8 @@ pinned iced does not expose Button content alignment, explicit-height buttons
 use a fill-height centered label component; explicit-width and height buttons
 use a label centered on both axes. Content-sized buttons retain plain text plus
 symmetric padding so a fill constraint cannot expand them.
+The five icon-only toolbar actions have explicit 34 × 34 outer bounds and share
+one vertical center; their tooltip wrappers do not participate in sizing.
 
 The voice workspace uses an explicit two-column grid: transcript content fills
 the left column, while active recording feedback and recovery controls have a
@@ -225,8 +233,14 @@ Routine mode guidance is contextual-only: its `Notice` collapses and the mode
 indicator tooltip explains Normal, Insert, typed command, dictating, or
 finalizing behavior. Service-pill tooltips similarly replace duplicate inline
 status/help copy, but do not replace attention-getting notices for service
-warnings or errors. Settings, Insert last, and saved state also carry concise
-tooltips; Insert last explains its disabled state as well as its enabled action.
+warnings or errors. Routine info, working, and success notices do not reserve a
+full-width workspace banner; sticky warning, error, and offline notices use a
+compact icon-led alert. Settings, Insert last, and saved state have concise
+tooltips, while voice and command prompts use keycap-style shortcut elements.
+Safe Harper completion follows the same quiet path: the Checker pill gains a
+check indicator and presents bounded applied/to-review lists on hover. Clicking
+it opens the complete scrollable bounded review. Only a rejected local correction or stale manual
+suggestion escalates to the foreground safety alert.
 
 Every failure notice answers three questions in order: what failed, what
 happened to the user's text, and what the user can do next. Warning and error
@@ -235,9 +249,9 @@ erase them. A dismissal or a relevant successful recovery may replace them.
 Worker-stop events also preserve an already recorded fatal reason instead of
 reducing it to a generic offline message.
 
-That hierarchy is visible as well as textual. Informational and working notices
-use the wine accent surface; offline and error outcomes switch to a distinct
-coral-tinted banner. Recovery guidance occupies its own line below the outcome
+That hierarchy is visible as well as textual. Sticky warning and error outcomes
+use distinct tinted alerts with a Lucide state glyph. Recovery guidance
+occupies its own line below the outcome
 detail so the next action remains scannable even when either message wraps.
 
 When failures compete for the single foreground slot, severity dominates the
@@ -312,8 +326,14 @@ unchanged.
   retains the complete applied/ignored decision audit in memory, including
   category, character span, Harper message, suggestions, and the reason for
   every skip, including a document-validation failure after correction. The
-  Checker pill exposes the latest bounded summary; the audit is
-  never persisted because messages may contain dictated text. The corrected
+  Checker pill exposes the latest bounded summary and opens an in-memory review
+  of current findings. A manual suggestion is accepted only while its buffer
+  generation, revision, and exact bounded context still match; it creates one
+  undoable trusted replacement and then refreshes the lint list. The audit and
+  review are never persisted because messages may contain dictated text.
+  Review-local ignore filters can target one exact lint record or every current
+  lint of a kind; filtered findings remain visible and are reclassified after
+  each manual Apply without changing the document. The corrected
   context replacement restores the caret immediately after the corrected spoken
   span and amends the optimistic history entry, so one utterance remains one Undo.
   Settings can instead select Codex refinement; that path selects the exact new
@@ -362,7 +382,7 @@ Talkdown tests progressively replace only the slow or machine-dependent edge:
   `tests/snapshots/main-window-tiny-skia.png`; the contextual-help fixture hovers
   the Normal-mode pill and compares
   `tests/snapshots/contextual-help-window-tiny-skia.png`; the checker-audit
-  fixture hovers a completed Checker pill and compares
+  fixture opens a completed Checker review and compares
   `tests/snapshots/checker-audit-window-tiny-skia.png`; the settings fixture
   compares `tests/snapshots/settings-window-tiny-skia.png`; the discard dialog
   compares `tests/snapshots/discard-changes-window-tiny-skia.png`; the model-download

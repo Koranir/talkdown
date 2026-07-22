@@ -50,6 +50,7 @@ fn tiny_skia_simulator(app: &App, size: (f32, f32)) -> Simulator<'_, Message> {
     let settings = Settings {
         default_font: UI_FONT,
         default_text_size: iced::Pixels(BODY_SIZE),
+        fonts: vec![lucide_icons::LUCIDE_FONT_BYTES.into()],
         ..Settings::default()
     };
     Simulator::with_size(settings, size, app.view())
@@ -68,6 +69,33 @@ fn assert_button_label_centered(
             && (control.center().y - label_bounds.center().y).abs() <= 0.5,
         "{label:?} is not centered in its button: {label_bounds:?} vs {control:?}"
     );
+
+    Ok(())
+}
+
+fn assert_toolbar_actions_are_square_and_aligned(
+    ui: &mut Simulator<'_, Message>,
+) -> Result<(), Error> {
+    let ids = [
+        NEW_BUTTON_ID,
+        OPEN_BUTTON_ID,
+        SAVE_BUTTON_ID,
+        SAVE_AS_BUTTON_ID,
+        SETTINGS_BUTTON_ID,
+    ];
+    let first = ui.find(id(ids[0]))?.bounds();
+
+    for control_id in ids {
+        let bounds = ui.find(id(control_id))?.bounds();
+        assert!(
+            (bounds.width - bounds.height).abs() <= 0.5,
+            "{control_id} is not square: {bounds:?}"
+        );
+        assert!(
+            (bounds.center().y - first.center().y).abs() <= 0.5,
+            "{control_id} is not aligned with the other toolbar actions: {bounds:?} vs {first:?}"
+        );
+    }
 
     Ok(())
 }
@@ -1122,13 +1150,15 @@ fn iced_checker_audit_window_snapshot() -> Result<(), Error> {
             .as_ref()
             .is_some_and(|audit| { !audit.applied.is_empty() && !audit.ignored.is_empty() })
     );
+    let _ = app.update(Message::IgnoreCheckerLint { lint_index: 0 });
+    assert!(
+        app.checker_review
+            .as_ref()
+            .is_some_and(|review| !review.ignored.is_empty())
+    );
+    app.checker_review_open = true;
 
-    assert_tiny_skia_snapshot(
-        &app,
-        "checker-audit-window",
-        WINDOW_SIZE,
-        Some(CHECKER_PILL_ID),
-    )
+    assert_tiny_skia_snapshot(&app, "checker-audit-window", WINDOW_SIZE, None)
 }
 
 #[test]
@@ -1168,7 +1198,7 @@ fn iced_settings_window_snapshot() -> Result<(), Error> {
     let _ = ui.find(id(SETTINGS_APPLY_ID))?;
     assert_button_label_centered(&mut ui, SETTINGS_WRAP_ID, "OFF")?;
     assert_button_label_centered(&mut ui, SETTINGS_CANCEL_ID, "Cancel")?;
-    assert_button_label_centered(&mut ui, SETTINGS_APPLY_ID, "Apply changes")?;
+    assert_button_label_centered(&mut ui, SETTINGS_APPLY_ID, "Apply")?;
 
     assert_tiny_skia_snapshot(&app, "settings-window", WINDOW_SIZE, None)
 }
@@ -1188,7 +1218,7 @@ fn iced_discard_changes_window_snapshot() -> Result<(), Error> {
     let _ = ui.find(id(DISCARD_MODAL_ID))?;
     let _ = ui.find(id(DISCARD_KEEP_ID))?;
     let _ = ui.find(id(DISCARD_CONFIRM_ID))?;
-    assert_button_label_centered(&mut ui, DISCARD_KEEP_ID, "Keep editing")?;
+    assert_button_label_centered(&mut ui, DISCARD_KEEP_ID, "Cancel")?;
     assert_button_label_centered(&mut ui, DISCARD_CONFIRM_ID, "Discard & open")?;
 
     assert_tiny_skia_snapshot(&app, "discard-changes-window", WINDOW_SIZE, None)
@@ -1219,7 +1249,7 @@ fn iced_model_download_window_snapshot() -> Result<(), Error> {
 
     let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
     let _ = ui.find("NOT SET")?;
-    let _ = ui.find("Download default")?;
+    let _ = ui.find("Download")?;
     let _ = ui.find("Download unavailable: The connection closed before the verified model was complete; the partial file was removed.")?;
 
     assert_tiny_skia_snapshot(&app, "model-download-window", WINDOW_SIZE, None)
@@ -1278,12 +1308,12 @@ fn iced_minimum_window_snapshot() -> Result<(), Error> {
 
     let mut ui = tiny_skia_simulator(&app, MIN_WINDOW_SIZE);
     for label in [
-        "Voice workspace",
+        "Voice",
         "Speech · OFFLINE",
-        "Codex · READY",
+        "Codex",
         "Insert last",
         "SAVED",
-        "Ln 4, Col 1  ·  rev 0  ·  UTF-8",
+        "Ln 4, Col 1",
         "I insert · : cmd · +/- text",
     ] {
         let target = ui.find(label)?;
@@ -1300,7 +1330,7 @@ fn iced_minimum_window_snapshot() -> Result<(), Error> {
         );
     }
 
-    let voice_title = ui.find("Voice workspace")?.bounds();
+    let voice_title = ui.find("Voice")?.bounds();
     let speech_chip = ui.find("Speech · OFFLINE")?.bounds();
     assert!(
         (voice_title.center().y - speech_chip.center().y).abs() <= 2.0,
@@ -1308,10 +1338,9 @@ fn iced_minimum_window_snapshot() -> Result<(), Error> {
     );
 
     let cursor_copy = format!(
-        "Ln {}, Col {}  ·  rev {}  ·  UTF-8",
+        "Ln {}, Col {}",
         app.document.cursor().position.line + 1,
         app.document.cursor().position.column + 1,
-        app.document.revision(),
     );
     let cursor_bounds = ui.find(cursor_copy)?.bounds();
     assert!(
@@ -1811,12 +1840,13 @@ fn harper_checks_literal_dictation_locally_as_one_undo_step() {
     app.optimistic_insert(anchor, "this is an test.".into());
 
     assert_eq!(app.document.text(), "Note: this is a test.");
-    assert_eq!(app.notice.source, NoticeSource::Checker);
-    assert_eq!(app.notice.state, UiState::Success);
+    assert_eq!(app.notice.source, NoticeSource::Editor);
+    assert!(app.notice.contextual_only);
     let audit = app.last_harper_audit.as_ref().expect("latest Harper audit");
     assert_eq!(audit.fixes(), 1);
     assert_eq!(audit.ignored_count(), 0);
-    assert!(app.checker_status.contains("1 applied · 0 ignored"));
+    assert!(app.checker_status.contains("1 applied · 0 to review"));
+    assert!(app.checker_review.is_some());
     assert!(app.pending.is_empty());
     assert!(codex.try_request().is_none());
     assert!(app.document.undo());
@@ -1866,22 +1896,205 @@ fn harper_records_ignored_findings_and_surfaces_the_audit() -> Result<(), Error>
     app.refresh_checker_status();
     let anchor = app.document.snapshot();
 
-    app.optimistic_insert(anchor, "Talkdown uses Koranir's wrds.".into());
+    app.optimistic_insert(anchor, "this is an test with wrds.".into());
 
-    assert_eq!(app.document.text(), "Note: Talkdown uses Koranir's wrds.");
+    assert_eq!(app.document.text(), "Note: this is a test with wrds.");
     let audit = app.last_harper_audit.as_ref().expect("latest Harper audit");
-    assert_eq!(audit.fixes(), 0);
+    assert!(audit.fixes() >= 1);
     assert!(audit.ignored_count() >= 1);
     assert!(audit.ignored.iter().any(|ignored| {
         ignored.lint.kind == harper_core::linting::LintKind::Spelling
             && ignored.reason == crate::checker::IgnoreReason::PolicyExcluded
     }));
-    assert!(app.checker_status.contains("ignored"));
-    assert!(app.notice.detail.contains("left the text unchanged"));
+    assert!(app.checker_status.contains("to review"));
+    assert_eq!(app.notice.source, NoticeSource::Editor);
+    assert!(app.notice.contextual_only);
     assert!(codex.try_request().is_none());
 
-    let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
-    let _ = ui.find(id(CHECKER_PILL_ID))?;
+    {
+        let review = app.checker_review.as_ref().expect("checker tooltip review");
+        let mut ui = iced_test::simulator(view::checker::tooltip_preview(review));
+        let _ = ui.find("Checker review")?;
+        let _ = ui.find("APPLIED")?;
+        let _ = ui.find("TO REVIEW")?;
+    }
+
+    let open_messages = {
+        let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+        let _ = ui.click(id(CHECKER_PILL_ID))?;
+        ui.into_messages().collect::<Vec<_>>()
+    };
+    for message in open_messages {
+        let _ = app.update(message);
+    }
+    assert!(app.checker_review_open);
+    assert!(!app.should_keep_normal_cursor_visible());
+    let _ = app.update(Message::EnterInsert);
+    assert_eq!(app.mode, Mode::Normal);
+    {
+        let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+        let _ = ui.find(id(CHECKER_REVIEW_MODAL_ID))?;
+        let _ = ui.find(id(CHECKER_REVIEW_SCROLL_ID))?;
+        let _ = ui.find(id(CHECKER_REVIEW_CLOSE_ID))?;
+        let _ = ui.find(id(CHECKER_REVIEW_FIRST_APPLY_ID))?;
+        let _ = ui.find(id(CHECKER_REVIEW_FIRST_IGNORE_ID))?;
+        let _ = ui.find(id(CHECKER_REVIEW_FIRST_IGNORE_KIND_ID))?;
+    }
+
+    let original = app.document.text();
+    let revision = app.document.revision();
+    let (lint_index, suggestion_index) = app
+        .checker_review
+        .as_ref()
+        .and_then(|review| {
+            review
+                .lints
+                .iter()
+                .enumerate()
+                .find_map(|(lint_index, lint)| {
+                    (!lint.lint.suggestions.is_empty()).then_some((lint_index, 0))
+                })
+        })
+        .expect("a manually applicable Harper finding");
+
+    let apply_messages = {
+        let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+        let _ = ui.click(id(CHECKER_REVIEW_FIRST_APPLY_ID))?;
+        ui.into_messages().collect::<Vec<_>>()
+    };
+    assert!(apply_messages.iter().any(|message| {
+        matches!(
+            message,
+            Message::ApplyCheckerSuggestion {
+                lint_index: message_lint,
+                suggestion_index: message_suggestion,
+            } if *message_lint == lint_index && *message_suggestion == suggestion_index
+        )
+    }));
+    for message in apply_messages {
+        let _ = app.update(message);
+    }
+    assert_ne!(app.document.text(), original);
+    assert!(app.document.revision() > revision);
+    assert!(
+        app.checker_review
+            .as_ref()
+            .is_some_and(|review| !review.manually_applied.is_empty())
+    );
+    assert!(app.document.undo());
+    assert_eq!(app.document.text(), original);
+
+    // Ignore actions are review-local filters and never mutate the document.
+    let (mut ignore_app, _speech, _codex) = test_app("Note: ");
+    ignore_app.checking_provider = CheckingProvider::Harper;
+    let anchor = ignore_app.document.snapshot();
+    ignore_app.optimistic_insert(anchor, "this is an test with wrds.".into());
+    ignore_app.checker_review_open = true;
+    let ignored_text = ignore_app.document.text();
+    let ignored_revision = ignore_app.document.revision();
+    let ignored_lint = ignore_app
+        .checker_review
+        .as_ref()
+        .and_then(|review| review.lints.first())
+        .map(|lint| lint.lint.clone())
+        .expect("a lint to ignore once");
+    let ignore_messages = {
+        let mut ui = tiny_skia_simulator(&ignore_app, WINDOW_SIZE);
+        let _ = ui.click(id(CHECKER_REVIEW_FIRST_IGNORE_ID))?;
+        ui.into_messages().collect::<Vec<_>>()
+    };
+    assert!(
+        ignore_messages
+            .iter()
+            .any(|message| matches!(message, Message::IgnoreCheckerLint { lint_index: 0 }))
+    );
+    for message in ignore_messages {
+        let _ = ignore_app.update(message);
+    }
+    assert_eq!(ignore_app.document.text(), ignored_text);
+    assert_eq!(ignore_app.document.revision(), ignored_revision);
+    assert!(ignore_app.checker_review.as_ref().is_some_and(|review| {
+        review.ignored.iter().any(|ignored| {
+            ignored.lint == ignored_lint && matches!(ignored.scope, CheckerIgnoreScope::Lint)
+        })
+    }));
+    {
+        let review = ignore_app
+            .checker_review
+            .as_ref()
+            .expect("ignored tooltip review");
+        let mut ui = iced_test::simulator(view::checker::tooltip_preview(review));
+        let _ = ui.find("IGNORED")?;
+    }
+
+    let (mut kind_app, _speech, _codex) = test_app("Note: ");
+    kind_app.checking_provider = CheckingProvider::Harper;
+    let anchor = kind_app.document.snapshot();
+    kind_app.optimistic_insert(anchor, "this is an test with wrds.".into());
+    kind_app.checker_review_open = true;
+    let kind_text = kind_app.document.text();
+    let kind_revision = kind_app.document.revision();
+    let ignored_kind = kind_app
+        .checker_review
+        .as_ref()
+        .and_then(|review| review.lints.first())
+        .map(|lint| lint.lint.kind)
+        .expect("a lint kind to ignore");
+    let ignore_kind_messages = {
+        let mut ui = tiny_skia_simulator(&kind_app, WINDOW_SIZE);
+        let _ = ui.click(id(CHECKER_REVIEW_FIRST_IGNORE_KIND_ID))?;
+        ui.into_messages().collect::<Vec<_>>()
+    };
+    for message in ignore_kind_messages {
+        let _ = kind_app.update(message);
+    }
+    assert_eq!(kind_app.document.text(), kind_text);
+    assert_eq!(kind_app.document.revision(), kind_revision);
+    assert!(kind_app.checker_review.as_ref().is_some_and(|review| {
+        review.ignored_kinds.contains(&ignored_kind)
+            && review
+                .lints
+                .iter()
+                .all(|lint| lint.lint.kind != ignored_kind)
+            && review.ignored.iter().any(|ignored| {
+                ignored.lint.kind == ignored_kind
+                    && matches!(ignored.scope, CheckerIgnoreScope::Kind)
+            })
+    }));
+
+    // A review card never applies after any intervening document revision.
+    let (mut stale_app, _speech, _codex) = test_app("Note: ");
+    stale_app.checking_provider = CheckingProvider::Harper;
+    let anchor = stale_app.document.snapshot();
+    stale_app.optimistic_insert(anchor, "Talkdown uses Koranir's wrds.".into());
+    stale_app.checker_review_open = true;
+    let stale_action = stale_app
+        .checker_review
+        .as_ref()
+        .and_then(|review| {
+            review
+                .lints
+                .iter()
+                .enumerate()
+                .find_map(|(lint_index, lint)| {
+                    (!lint.lint.suggestions.is_empty()).then_some((lint_index, 0))
+                })
+        })
+        .expect("an actionable stale Harper finding");
+    let cursor = stale_app.document.snapshot().cursor;
+    let _ = stale_app.document.replace(cursor..cursor, " changed");
+    let stale_text = stale_app.document.text();
+    let _ = stale_app.update(Message::ApplyCheckerSuggestion {
+        lint_index: stale_action.0,
+        suggestion_index: stale_action.1,
+    });
+    assert_eq!(stale_app.document.text(), stale_text);
+    assert!(!stale_app.checker_review_open);
+    assert!(stale_app.checker_review.is_none());
+    assert_eq!(stale_app.notice.source, NoticeSource::Safety);
+
+    let mut ui = tiny_skia_simulator(&stale_app, WINDOW_SIZE);
+    assert!(ui.find(id(CHECKER_REVIEW_MODAL_ID)).is_err());
     Ok(())
 }
 
@@ -1976,7 +2189,7 @@ fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), 
 
     let cancel_messages = {
         let mut ui = Simulator::with_size(Settings::default(), (1_180.0, 1_080.0), app.view());
-        let _ = ui.find("Downloading and verifying… 50% · 74 / 147 MB")?;
+        let _ = ui.find("Downloading · 50% · 74 / 147 MB")?;
         let _ = ui.click(id(SETTINGS_MODEL_DEFAULT_ID))?;
         ui.into_messages().collect::<Vec<_>>()
     };
@@ -2118,9 +2331,13 @@ fn routine_guidance_is_contextual_instead_of_a_banner() -> Result<(), Error> {
 
     assert!(app.notice.contextual_only);
     assert_eq!(app.mode_help().0, "Normal mode");
-    assert!(app.mode_help().1.starts_with("Typing is disabled."));
+    assert_eq!(
+        app.mode_help().1,
+        "I insert · Space dictate · C voice command"
+    );
 
     let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+    assert_toolbar_actions_are_square_and_aligned(&mut ui)?;
     let _ = ui.find(id(MODE_PILL_ID))?;
     let _ = ui.find(id(SPEECH_PILL_ID))?;
     let _ = ui.find(id(CODEX_PILL_ID))?;
@@ -2133,6 +2350,25 @@ fn routine_guidance_is_contextual_instead_of_a_banner() -> Result<(), Error> {
     let _ = app.update(Message::SettingsToggleWordWrap);
     let _ = app.update(Message::ApplySettings);
     assert!(app.notice.contextual_only);
+
+    app.notice = Notice::new(
+        NoticeSource::Editor,
+        UiState::Success,
+        "Routine complete",
+        "No banner needed.",
+    );
+    let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+    assert!(ui.find("Routine complete").is_err());
+    drop(ui);
+
+    app.notice = Notice::new(
+        NoticeSource::File,
+        UiState::Warning,
+        "File needs attention",
+        "The editor text is unchanged.",
+    );
+    let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+    let _ = ui.find("File needs attention")?;
     Ok(())
 }
 
@@ -2147,6 +2383,55 @@ fn iced_normal_mode_rejects_typewritten_text() -> Result<(), Error> {
     assert_eq!(editor.document.text(), "seed");
     assert_eq!(editor.mode, Mode::Normal);
     Ok(())
+}
+
+#[test]
+fn regular_cursor_shortcuts_are_delegated_in_normal_and_insert_modes() {
+    fn named_key_press(named: key::Named, modifiers: keyboard::Modifiers) -> text_editor::KeyPress {
+        let key = keyboard::Key::Named(named);
+        text_editor::KeyPress {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            modifiers,
+            text: None,
+            status: text_editor::Status::Focused { is_hovered: false },
+        }
+    }
+
+    let jump = if cfg!(target_os = "macos") {
+        keyboard::Modifiers::ALT
+    } else {
+        keyboard::Modifiers::CTRL
+    };
+    for mode in [Mode::Normal, Mode::Insert] {
+        let word_left = editor_binding(mode, named_key_press(key::Named::ArrowLeft, jump));
+        let select_word_right = editor_binding(
+            mode,
+            named_key_press(key::Named::ArrowRight, jump | keyboard::Modifiers::SHIFT),
+        );
+
+        assert!(matches!(
+            word_left,
+            Some(text_editor::Binding::Move(text_editor::Motion::WordLeft))
+        ));
+        assert!(matches!(
+            select_word_right,
+            Some(text_editor::Binding::Select(text_editor::Motion::WordRight))
+        ));
+        assert!(matches!(
+            editor_binding(mode, named_key_press(key::Named::Home, jump)),
+            Some(text_editor::Binding::Move(
+                text_editor::Motion::DocumentStart
+            ))
+        ));
+        assert!(matches!(
+            editor_binding(mode, named_key_press(key::Named::End, jump)),
+            Some(text_editor::Binding::Move(text_editor::Motion::DocumentEnd))
+        ));
+    }
 }
 
 #[test]

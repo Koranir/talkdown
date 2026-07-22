@@ -62,6 +62,29 @@ pub(super) fn editor_binding(
         .to_latin(key_press.physical_key)
         .map(|character| character.to_ascii_lowercase());
 
+    // Keep conventional cursor movement available in both editing modes. This
+    // must precede the command-shortcut branch: on non-macOS platforms Ctrl is
+    // also the command modifier, and iced uses it to widen Left/Right and
+    // Home/End into word and document motions. Shift continues to extend the
+    // selection, including when combined with the jump modifier.
+    if mode != Mode::Command
+        && matches!(
+            key_press.key.as_ref(),
+            keyboard::Key::Named(
+                key::Named::ArrowLeft
+                    | key::Named::ArrowRight
+                    | key::Named::ArrowUp
+                    | key::Named::ArrowDown
+                    | key::Named::Home
+                    | key::Named::End
+                    | key::Named::PageUp
+                    | key::Named::PageDown,
+            )
+        )
+    {
+        return text_editor::Binding::from_key_press(key_press);
+    }
+
     if key_press.modifiers.command() {
         return match latin {
             Some('=' | '+') => Some(text_editor::Binding::Custom(Message::AdjustUiScale(
@@ -161,19 +184,7 @@ pub(super) fn editor_binding(
         )),
         Some("G") => Some(text_editor::Binding::Move(text_editor::Motion::DocumentEnd)),
         Some(_) => None,
-        None => match key_press.key.as_ref() {
-            keyboard::Key::Named(
-                key::Named::ArrowLeft
-                | key::Named::ArrowRight
-                | key::Named::ArrowUp
-                | key::Named::ArrowDown
-                | key::Named::Home
-                | key::Named::End
-                | key::Named::PageUp
-                | key::Named::PageDown,
-            ) => text_editor::Binding::from_key_press(key_press),
-            _ => None,
-        },
+        None => None,
     }
 }
 

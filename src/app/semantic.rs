@@ -4,7 +4,10 @@ use super::presentation::{compact_copy, lint_audit_summary};
 use super::transcription::{
     char_offset_to_byte, fit_literal, harper_context_range, next_char_boundary,
 };
-use super::{App, Notice, NoticeSource, PendingEdit, UiState};
+use super::{
+    App, CheckerIgnoreScope, CheckerIgnoredLint, CheckerReview, CheckerReviewLint, Message, Notice,
+    NoticeSource, PendingEdit, UiState,
+};
 
 use crate::checker::{CheckResult, CheckingProvider, IgnoreReason};
 use crate::codex::{CodexEvent, CodexRequest, CodexSubmitError, editable_context_range};
@@ -14,6 +17,9 @@ use crate::edit::{Anchor, EditIntent, ProposedEdit, rebase_exact, resolve};
 use std::ffi;
 use std::ops::Range;
 use std::path::Path;
+
+use iced::Task;
+use iced::widget::operation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexFailureScope {
@@ -209,79 +215,298 @@ impl App {
             audit,
             focus_end,
         } = checked;
-        let applied = audit.fixes();
-        let ignored = audit.ignored_count();
-        self.checker_status = lint_audit_summary(&audit);
         self.last_harper_audit = Some(audit);
+        self.checker_review = None;
+        self.checker_review_open = false;
 
-        if text == plan.original_context {
-            self.report_unchanged_harper_check(ignored);
+        let applied = if text == plan.original_context {
+            self.report_unchanged_harper_check();
+            true
         } else {
-            self.apply_harper_correction(plan.context_range, text, focus_end, applied, ignored);
+            self.apply_harper_correction(plan.context_range.clone(), &text, focus_end)
+        };
+
+        if applied {
+            let reviewed_range = plan.context_range.start..plan.context_range.start + text.len();
+            self.capture_checker_review(reviewed_range, Vec::new(), Vec::new(), Vec::new());
         }
     }
 
-    fn report_unchanged_harper_check(&mut self, ignored: usize) {
-        self.set_transient_notice(
-            Notice::new(
-                NoticeSource::Checker,
-                UiState::Success,
-                "Dictation inserted",
-                if ignored == 0 {
-                    "Harper found no local issues. No network request was made.".to_owned()
-                } else {
-                    format!(
-                        "Harper recorded {ignored} lint {} but left the text unchanged. Hover over Checker for the reasons. No network request was made.",
-                        if ignored == 1 { "suggestion" } else { "suggestions" }
-                    )
-                },
-            )
-            .contextual(),
-        );
+    fn report_unchanged_harper_check(&mut self) {
+        self.set_transient_notice(self.default_notice());
     }
 
     fn apply_harper_correction(
         &mut self,
         context_range: Range<usize>,
-        corrected: String,
+        corrected: &str,
         focus_end: usize,
-        applied: usize,
-        ignored: usize,
-    ) {
-        let Some(relative_cursor) = char_offset_to_byte(&corrected, focus_end) else {
+    ) -> bool {
+        let Some(relative_cursor) = char_offset_to_byte(corrected, focus_end) else {
             self.reject_harper_application(
                 "The corrected cursor position was not a valid UTF-8 boundary.".to_owned(),
             );
-            return;
+            return false;
         };
         let cursor = context_range.start + relative_cursor;
 
-        match self.document.amend_last_replace_with_cursor(
-            context_range,
-            &corrected,
-            cursor,
-        ) {
-            Ok(()) => self.set_notice(
-                Notice::new(
-                    NoticeSource::Checker,
-                    UiState::Success,
-                    "Dictation checked locally",
-                    format!(
-                        "Harper applied {} focused local {} using the surrounding text. One Undo restores the text from before dictation.",
-                        applied,
-                        if applied == 1 { "fix" } else { "fixes" }
-                    ),
-                )
-                .recovery(if ignored == 0 {
-                    "Hover over Checker to review the applied lint record."
-                } else {
-                    "Hover over Checker to review applied and ignored lint records."
-                }),
-            ),
-            Err(error) => self.reject_harper_application(format!(
-                "The trusted replacement failed validation: {error:?}."
-            )),
+        match self
+            .document
+            .amend_last_replace_with_cursor(context_range, corrected, cursor)
+        {
+            Ok(()) => {
+                self.set_transient_notice(self.default_notice());
+                true
+            }
+            Err(error) => {
+                self.reject_harper_application(format!(
+                    "The trusted replacement failed validation: {error:?}."
+                ));
+                false
+            }
         }
+    }
+
+    fn capture_checker_review(
+        &mut self,
+        context_range: Range<usize>,
+        manually_applied: Vec<crate::checker::LintRecord>,
+        ignored_lints: Vec<crate::checker::LintRecord>,
+        ignored_kinds: Vec<harper_core::linting::LintKind>,
+    ) {
+        let snapshot = self.document.snapshot();
+        let Some(context_text) = snapshot.text.get(context_range.clone()).map(str::to_owned) else {
+            self.checker_review = None;
+            self.refresh_checker_status();
+            return;
+        };
+        let lints = self.harper.review(&context_text);
+        let audit_ignored = self
+            .last_harper_audit
+            .as_ref()
+            .map(|audit| audit.ignored.as_slice())
+            .unwrap_or_default();
+        let mut review_lints = Vec::new();
+        let mut ignored = Vec::new();
+        for lint in lints {
+            if ignored_kinds.contains(&lint.kind) {
+                ignored.push(CheckerIgnoredLint {
+                    lint,
+                    scope: CheckerIgnoreScope::Kind,
+                });
+            } else if ignored_lints.contains(&lint) {
+                ignored.push(CheckerIgnoredLint {
+                    lint,
+                    scope: CheckerIgnoreScope::Lint,
+                });
+            } else {
+                let reason = audit_ignored
+                    .iter()
+                    .find(|ignored| {
+                        ignored.lint.span == lint.span
+                            && ignored.lint.kind == lint.kind
+                            && ignored.lint.message == lint.message
+                    })
+                    .map(|ignored| ignored.reason);
+                review_lints.push(CheckerReviewLint { lint, reason });
+            }
+        }
+        let auto_applied = self
+            .last_harper_audit
+            .as_ref()
+            .map(|audit| audit.applied.clone())
+            .unwrap_or_default();
+
+        self.checker_status = checker_review_summary(
+            auto_applied.len() + manually_applied.len(),
+            review_lints.len(),
+            ignored.len(),
+        );
+        self.checker_review = Some(CheckerReview {
+            buffer_generation: self.buffer_generation,
+            revision: snapshot.revision,
+            context_range,
+            context_text,
+            auto_applied,
+            manually_applied,
+            ignored_lints,
+            ignored_kinds,
+            ignored,
+            lints: review_lints,
+        });
+    }
+
+    pub(super) fn open_checker_review(&mut self) -> Task<Message> {
+        if self.checking_provider == CheckingProvider::Harper
+            && self.checker_review.is_some()
+            && self.settings.is_none()
+            && self.discard_action.is_none()
+        {
+            self.checker_review_open = true;
+        }
+        Task::none()
+    }
+
+    pub(super) fn close_checker_review(&mut self) -> Task<Message> {
+        self.checker_review_open = false;
+        operation::focus(super::EDITOR_ID)
+    }
+
+    pub(super) fn apply_checker_suggestion(
+        &mut self,
+        lint_index: usize,
+        suggestion_index: usize,
+    ) -> Task<Message> {
+        let Some(review) = self.checker_review.as_ref() else {
+            return Task::none();
+        };
+        let Some(review_lint) = review.lints.get(lint_index) else {
+            return Task::none();
+        };
+        let Some(suggestion) = review_lint.lint.suggestions.get(suggestion_index) else {
+            return Task::none();
+        };
+
+        let context_range = review.context_range.clone();
+        let context_text = review.context_text.clone();
+        let expected_generation = review.buffer_generation;
+        let expected_revision = review.revision;
+        let applied_lint = review_lint.lint.clone();
+        let (relative_chars, replacement) = suggestion.edit(&applied_lint.span);
+
+        let review_is_current = self.checker_review_is_current(
+            expected_generation,
+            expected_revision,
+            &context_range,
+            &context_text,
+        );
+        let Some(relative_start) = char_offset_to_byte(&context_text, relative_chars.start) else {
+            return self.reject_checker_review_application();
+        };
+        let Some(relative_end) = char_offset_to_byte(&context_text, relative_chars.end) else {
+            return self.reject_checker_review_application();
+        };
+        if !review_is_current || relative_start > relative_end {
+            return self.reject_checker_review_application();
+        }
+
+        let replace_range =
+            context_range.start + relative_start..context_range.start + relative_end;
+        if self
+            .document
+            .replace(replace_range.clone(), &replacement)
+            .is_err()
+        {
+            return self.reject_checker_review_application();
+        }
+
+        let mut manually_applied = review.manually_applied.clone();
+        manually_applied.push(applied_lint);
+        let ignored_lints = remap_ignored_lints_after_edit(
+            review.ignored_lints.clone(),
+            relative_chars,
+            replacement.chars().count(),
+        );
+        let ignored_kinds = review.ignored_kinds.clone();
+        let replaced_len = replace_range.end - replace_range.start;
+        let new_context_end = if replacement.len() >= replaced_len {
+            context_range.end + (replacement.len() - replaced_len)
+        } else {
+            context_range.end - (replaced_len - replacement.len())
+        };
+        self.capture_checker_review(
+            context_range.start..new_context_end,
+            manually_applied,
+            ignored_lints,
+            ignored_kinds,
+        );
+        Task::none()
+    }
+
+    pub(super) fn ignore_checker_lint(&mut self, lint_index: usize) -> Task<Message> {
+        let Some(review) = self.checker_review.as_ref() else {
+            return Task::none();
+        };
+        let Some(lint) = review.lints.get(lint_index).map(|lint| lint.lint.clone()) else {
+            return Task::none();
+        };
+        if !self.checker_review_is_current(
+            review.buffer_generation,
+            review.revision,
+            &review.context_range,
+            &review.context_text,
+        ) {
+            return self.reject_checker_review_application();
+        }
+
+        let mut ignored_lints = review.ignored_lints.clone();
+        if !ignored_lints.contains(&lint) {
+            ignored_lints.push(lint);
+        }
+        self.capture_checker_review(
+            review.context_range.clone(),
+            review.manually_applied.clone(),
+            ignored_lints,
+            review.ignored_kinds.clone(),
+        );
+        Task::none()
+    }
+
+    pub(super) fn ignore_checker_kind(&mut self, lint_index: usize) -> Task<Message> {
+        let Some(review) = self.checker_review.as_ref() else {
+            return Task::none();
+        };
+        let Some(kind) = review.lints.get(lint_index).map(|lint| lint.lint.kind) else {
+            return Task::none();
+        };
+        if !self.checker_review_is_current(
+            review.buffer_generation,
+            review.revision,
+            &review.context_range,
+            &review.context_text,
+        ) {
+            return self.reject_checker_review_application();
+        }
+
+        let mut ignored_kinds = review.ignored_kinds.clone();
+        if !ignored_kinds.contains(&kind) {
+            ignored_kinds.push(kind);
+        }
+        self.capture_checker_review(
+            review.context_range.clone(),
+            review.manually_applied.clone(),
+            review.ignored_lints.clone(),
+            ignored_kinds,
+        );
+        Task::none()
+    }
+
+    fn checker_review_is_current(
+        &self,
+        expected_generation: u64,
+        expected_revision: u64,
+        context_range: &Range<usize>,
+        context_text: &str,
+    ) -> bool {
+        self.buffer_generation == expected_generation
+            && self.document.revision() == expected_revision
+            && self.document.text().get(context_range.clone()) == Some(context_text)
+    }
+
+    fn reject_checker_review_application(&mut self) -> Task<Message> {
+        self.checker_review_open = false;
+        self.checker_review = None;
+        self.checker_status = "Review expired · dictate again to refresh.".into();
+        self.set_notice(
+            Notice::new(
+                NoticeSource::Safety,
+                UiState::Warning,
+                "Checker review expired",
+                "The reviewed text changed, so the stored lint no longer identifies an exact action.",
+            )
+            .recovery("No checker action was applied. Dictate again to refresh the review."),
+        );
+        operation::focus(super::EDITOR_ID)
     }
 
     fn reject_harper_application(&mut self, detail: String) {
@@ -789,4 +1014,34 @@ impl App {
             );
         }
     }
+}
+
+fn checker_review_summary(applied: usize, remaining: usize, ignored: usize) -> String {
+    format!(
+        "Latest check · {applied} applied · {remaining} to review · {ignored} ignored. Click to inspect."
+    )
+}
+
+fn remap_ignored_lints_after_edit(
+    ignored: Vec<crate::checker::LintRecord>,
+    edited: Range<usize>,
+    replacement_len: usize,
+) -> Vec<crate::checker::LintRecord> {
+    let replaced_len = edited.end - edited.start;
+    let delta = replacement_len as isize - replaced_len as isize;
+
+    ignored
+        .into_iter()
+        .filter_map(|mut lint| {
+            if lint.span.end <= edited.start {
+                Some(lint)
+            } else if edited.end <= lint.span.start {
+                lint.span.start = lint.span.start.checked_add_signed(delta)?;
+                lint.span.end = lint.span.end.checked_add_signed(delta)?;
+                Some(lint)
+            } else {
+                None
+            }
+        })
+        .collect()
 }

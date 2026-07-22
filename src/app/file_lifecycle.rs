@@ -569,6 +569,10 @@ impl App {
     pub(super) fn replace_document(&mut self, text: &str) {
         self.abandon_document_work();
         self.buffer_generation = self.buffer_generation.wrapping_add(1);
+        self.checker_review = None;
+        self.checker_review_open = false;
+        self.last_harper_audit = None;
+        self.refresh_checker_status();
         self.document.reset(text);
     }
 }

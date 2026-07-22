@@ -127,6 +127,18 @@ pub fn status_pill(color: Color) -> container::Style {
         )
 }
 
+pub fn icon_tile(color: Color) -> container::Style {
+    container::Style::default()
+        .background(color.scale_alpha(0.1))
+        .border(Border::default().rounded(7))
+}
+
+pub fn keycap(_: &Theme) -> container::Style {
+    container::Style::default()
+        .background(SURFACE_HOVER)
+        .border(Border::default().rounded(5).width(1).color(BORDER_STRONG))
+}
+
 pub fn notice(state: UiState) -> container::Style {
     let (background, accent) = match state {
         UiState::Success | UiState::Ready => (SUCCESS_SURFACE, SUCCESS),
@@ -158,6 +170,16 @@ pub fn quiet_button(_: &Theme, status: button::Status) -> button::Style {
         text_color,
         border: Border::default().rounded(6).width(1).color(border_color),
         ..button::Style::default()
+    }
+}
+
+pub fn bare_button(_: &Theme, _: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: TEXT,
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
     }
 }
 

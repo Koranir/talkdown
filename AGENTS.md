@@ -27,8 +27,9 @@ Optimize in this order:
   system-resolved type hierarchy: Atkinson Hyperlegible Next Regular,
   Semibold, and Bold for accessible application chrome; Libertinus Sans for
   transcript/command prose; and the user's generic monospace family for the
-  editor and compact metadata. Logical type sizes are limited to 11 px captions, 14 px
-  body/control copy, and 17 px lead/editor text. The font files are not bundled
+  editor and compact metadata. A bundled Lucide font supplies the small set of
+  action and state icons. Logical type sizes are limited to 11 px captions, 14 px
+  body/control copy, and 17 px lead/editor text. The text font files are not bundled
   yet, so hosts without these families will fall back and may not match pixel
   snapshots.
   Base16 Ocean supplies syntax highlighting. Foreground notices and
@@ -44,7 +45,9 @@ Optimize in this order:
   Harper pass retains an in-memory audit of applied and ignored findings;
   ignored records distinguish policy exclusions, missing or ambiguous
   suggestions, overlaps, and rejected document application. The Checker pill
-  exposes the latest summary.
+  exposes a concise summary with bounded applied/to-review previews and opens a
+  scrollable, local-only review where current suggestions can be applied
+  individually.
 - Local speech uses `cpal 0.17.x` and `whisper-rs 0.16.x`.
 - The ignored native speech test loaded `ggml-tiny.en.bin` and opened this
   host's default microphone successfully.
@@ -60,7 +63,7 @@ Optimize in this order:
 - An ignored eSpeak test writes a seekable WAV, injects PCM below CPAL, runs
   real local Whisper, inspects the app's genuine request, and manually
   completes an intercepted Codex response. Eight ignored tiny-skia tests render
-  complete ready/success, hovered Normal-mode help, settings-modal,
+  complete ready/success, hovered Normal-mode help, checker-review modal, settings-modal,
   unsaved-discard confirmation, model-download failure, Codex-failure, and minimum-window/offline-Speech-help views offscreen
   against `tests/snapshots/main-window-tiny-skia.png`,
   `tests/snapshots/contextual-help-window-tiny-skia.png`,
@@ -77,8 +80,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 87 tests: 74 normal and thirteen
-  ignored. The no-default-feature build discovers 80: 70 normal and ten
+- The default-feature build currently discovers 88 tests: 75 normal and thirteen
+  ignored. The no-default-feature build discovers 81: 71 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo test` passes with the default feature and with
   `--no-default-features`.
@@ -205,7 +208,8 @@ Optimize in this order:
   cross-platform pixel identity until licensed font assets are bundled.
 - Keep recurring widget structure in the component functions beside the view in
   `src/app/view.rs` and `src/app/view/settings.rs`:
-  `button_label`, `fixed_button_label`, `quiet_toolbar_button`,
+  `button_label`, `fixed_button_label`, `lucide_icon`, `fixed_icon_label`,
+  `icon_button`, `toolbar_action`, `shortcut_hint`,
   `settings_section_label`, `settings_preference`, `settings_model_preference`,
   `settings_action_button`, and `settings_scale_controls`. Extend these components when another instance
   has the same layout and behavior; keep genuinely distinct controls explicit.
@@ -215,14 +219,17 @@ Optimize in this order:
   symmetric padding; a `Fill` label would incorrectly expand them. Component
   refactors must preserve widget IDs, disabled-state messages, geometry,
   styles, and snapshot output.
+- Keep the five toolbar actions in identical 34 × 34 outer bounds and vertically
+  centered. The toolbar's fixed height and vertical padding must leave exactly
+  that much content space; do not rely on intrinsic icon metrics for geometry.
 - Keep the voice workspace's explicit two-column grid and the footer's three
   equal-width cells. The former aligns its title/chips and recovery control;
   the latter keeps cursor metadata truly centered regardless of the left and
   right copy. Do not replace either with flexible spacer arithmetic.
-- Keep informational/working banners visually distinct from failures: wine is
-  the active/info surface, while offline/error notices use their coral-tinted
-  failure surface. Render recovery guidance on its own line below the outcome,
-  not as an undifferentiated continuation of failure detail.
+- Routine info, working, and success notices stay out of the workspace; their
+  state is already visible in the editor, voice area, or service chips. Sticky
+  warning/error/offline notices use the compact icon-led foreground alert.
+  Render recovery guidance on its own line below the outcome.
 - `Notice` is the foreground outcome/recovery message. `speech_state` and
   `codex_state` are separate `UiState` health signals; a foreground notice must
   not be treated as either service's authoritative availability state.
@@ -288,9 +295,21 @@ Optimize in this order:
   may apply findings only within the sentence containing the transcript, and
   supplies deterministic whitespace at the two transcript seams because Harper
   does not lint identifier-like `foo.Bar`. Do not add spelling guesses or broad
-  style rewrites without an explicit review UI. Retain its latest complete lint audit in memory only;
-  lint messages can contain dictated text, so do not persist or externally log
-  them. If Settings selects Codex instead, its refinement may
+  style rewrites without an explicit review UI. The checker review may apply a
+  user-selected Harper suggestion only after matching the exact buffer
+  generation, document revision, and bounded source text retained for that
+  review; each accepted suggestion is a separate trusted, undoable replacement,
+  followed by a fresh lint pass. Ignore-once and ignore-kind decisions are
+  review-local filters: keep them visible in the review, carry them through its
+  subsequent lint passes, and never turn them into persistent preferences.
+  Retain its latest complete lint audit and review state in memory only; lint
+  messages can contain dictated text, so do not persist or externally log them.
+  Routine Harper completion is owned by the
+  Checker pill: its check indicator and bounded tooltip preview signal a
+  retained result, while clicking opens the complete scrollable review.
+  Applied and unchanged safe checks must not create a foreground notice;
+  rejected document application remains a prominent Safety error. If Settings
+  selects Codex instead, its refinement may
   amend the immediately preceding history entry only when no intervening
   revision occurred. Either path keeps one utterance as one undo step.
 - Document content and transcript strings are untrusted prompt data. Keep the
@@ -371,7 +390,7 @@ Optimize in this order:
 - Full-window visual regression uses `iced_test::Simulator` with
   `ICED_TEST_BACKEND=tiny-skia`. It snapshots only Talkdown's offscreen renderer
   buffer, never the whole desktop. The ready/success, hovered Normal-mode help,
-  checker-audit tooltip, staged settings modal, unsaved-discard confirmation,
+  checker-review modal, staged settings modal, unsaved-discard confirmation,
   model-download failure,
   preserved-transcript failure, and 940 × 640 offline-Speech-help geometry
   baselines are

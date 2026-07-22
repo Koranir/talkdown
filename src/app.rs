@@ -15,7 +15,7 @@ mod voice;
 use file_io::{FileError, SavedFile};
 use input::global_event;
 
-use crate::checker::{CheckingProvider, HarperChecker, LintAudit};
+use crate::checker::{CheckingProvider, HarperChecker, IgnoreReason, LintAudit, LintRecord};
 use crate::codex::{CodexBridge, CodexEvent, CodexModel};
 use crate::document::{Document, DocumentSnapshot};
 use crate::edit::{EditIntent, ProposedEdit};
@@ -61,9 +61,19 @@ use crate::model::DownloadError;
 const EDITOR_ID: &str = "talkdown-editor";
 const COMMAND_ID: &str = "talkdown-command";
 const MODE_PILL_ID: &str = "talkdown-mode-pill";
+const NEW_BUTTON_ID: &str = "talkdown-new-button";
+const OPEN_BUTTON_ID: &str = "talkdown-open-button";
+const SAVE_BUTTON_ID: &str = "talkdown-save-button";
+const SAVE_AS_BUTTON_ID: &str = "talkdown-save-as-button";
 const SPEECH_PILL_ID: &str = "talkdown-speech-pill";
 const CODEX_PILL_ID: &str = "talkdown-codex-pill";
 const CHECKER_PILL_ID: &str = "talkdown-checker-pill";
+const CHECKER_REVIEW_MODAL_ID: &str = "talkdown-checker-review-modal";
+const CHECKER_REVIEW_SCROLL_ID: &str = "talkdown-checker-review-scroll";
+const CHECKER_REVIEW_CLOSE_ID: &str = "talkdown-checker-review-close";
+const CHECKER_REVIEW_FIRST_APPLY_ID: &str = "talkdown-checker-review-first-apply";
+const CHECKER_REVIEW_FIRST_IGNORE_ID: &str = "talkdown-checker-review-first-ignore";
+const CHECKER_REVIEW_FIRST_IGNORE_KIND_ID: &str = "talkdown-checker-review-first-ignore-kind";
 const SETTINGS_BUTTON_ID: &str = "talkdown-settings-button";
 const SETTINGS_MODAL_ID: &str = "talkdown-settings-modal";
 const SETTINGS_SCROLL_ID: &str = "talkdown-settings-scroll";
@@ -100,6 +110,7 @@ const UI_SEMIBOLD_FONT: Font = UI_FONT.weight(font::Weight::Semibold);
 const UI_BOLD_FONT: Font = UI_FONT.weight(font::Weight::Bold);
 const READING_FONT: Font = Font::new("Libertinus Sans");
 const EDITOR_FONT: Font = Font::MONOSPACE;
+const ICON_FONT: Font = Font::new("lucide");
 
 const CAPTION_SIZE: f32 = 11.0;
 const BODY_SIZE: f32 = 14.0;
@@ -148,22 +159,8 @@ enum NoticeSource {
     Editor,
     File,
     Speech,
-    Checker,
     Codex,
     Safety,
-}
-
-impl NoticeSource {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Editor => "EDITOR",
-            Self::File => "FILE",
-            Self::Speech => "SPEECH",
-            Self::Checker => "CHECKER",
-            Self::Codex => "CODEX",
-            Self::Safety => "TEXT SAFETY",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -223,10 +220,7 @@ impl Notice {
         };
         let safety = match self.source {
             NoticeSource::File | NoticeSource::Safety => 10,
-            NoticeSource::Editor
-            | NoticeSource::Speech
-            | NoticeSource::Checker
-            | NoticeSource::Codex => 0,
+            NoticeSource::Editor | NoticeSource::Speech | NoticeSource::Codex => 0,
         };
         severity + safety
     }
@@ -241,6 +235,7 @@ pub fn run() -> iced::Result {
         .settings(iced::Settings {
             default_font: UI_FONT,
             default_text_size: iced::Pixels(BODY_SIZE),
+            fonts: vec![lucide_icons::LUCIDE_FONT_BYTES.into()],
             ..iced::Settings::default()
         })
         .window(window::Settings {
@@ -409,6 +404,18 @@ enum Message {
     SubmitCommand,
     InsertLastTranscript,
     DismissNotice,
+    OpenCheckerReview,
+    CloseCheckerReview,
+    ApplyCheckerSuggestion {
+        lint_index: usize,
+        suggestion_index: usize,
+    },
+    IgnoreCheckerLint {
+        lint_index: usize,
+    },
+    IgnoreCheckerKind {
+        lint_index: usize,
+    },
 
     // Window maintenance.
     RefreshNormalCursor,
@@ -462,6 +469,18 @@ impl Message {
             Self::KeepExternalEdits | Self::ReloadExternalFile | Self::GlobalEscape
         ) || self.is_modal_maintenance_event()
     }
+
+    fn is_allowed_during_checker_review(&self) -> bool {
+        matches!(
+            self,
+            Self::CloseCheckerReview
+                | Self::ApplyCheckerSuggestion { .. }
+                | Self::IgnoreCheckerLint { .. }
+                | Self::IgnoreCheckerKind { .. }
+                | Self::WindowCloseRequested(_)
+                | Self::GlobalEscape
+        ) || self.is_modal_maintenance_event()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +499,38 @@ struct PendingEdit {
     snapshot: DocumentSnapshot,
     intent: EditIntent,
     amend_optimistic_insert: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CheckerReviewLint {
+    lint: LintRecord,
+    reason: Option<IgnoreReason>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CheckerIgnoreScope {
+    Lint,
+    Kind,
+}
+
+#[derive(Debug, Clone)]
+struct CheckerIgnoredLint {
+    lint: LintRecord,
+    scope: CheckerIgnoreScope,
+}
+
+#[derive(Debug, Clone)]
+struct CheckerReview {
+    buffer_generation: u64,
+    revision: u64,
+    context_range: std::ops::Range<usize>,
+    context_text: String,
+    auto_applied: Vec<LintRecord>,
+    manually_applied: Vec<LintRecord>,
+    ignored_lints: Vec<LintRecord>,
+    ignored_kinds: Vec<harper_core::linting::LintKind>,
+    ignored: Vec<CheckerIgnoredLint>,
+    lints: Vec<CheckerReviewLint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,14 +554,6 @@ struct ExternalFileChange {
 }
 
 impl DiscardAction {
-    fn verb(self) -> &'static str {
-        match self {
-            Self::NewFile => "create a new buffer",
-            Self::OpenFile => "open another file",
-            Self::CloseWindow(_) => "close Talkdown",
-        }
-    }
-
     fn button_label(self) -> &'static str {
         match self {
             Self::NewFile => "Discard & new",
@@ -546,6 +589,8 @@ struct App {
     harper: HarperChecker,
     last_harper_audit: Option<LintAudit>,
     checker_status: String,
+    checker_review: Option<CheckerReview>,
+    checker_review_open: bool,
     codex_model: Option<String>,
     codex_models: Vec<CodexModel>,
 
@@ -678,9 +723,9 @@ impl App {
             checking_provider: CheckingProvider::default(),
             harper: HarperChecker::default(),
             last_harper_audit: None,
-            checker_status:
-                "Harper is ready. Applied and ignored findings from the latest local check will appear here."
-                    .into(),
+            checker_status: "Harper ready · checks stay local.".into(),
+            checker_review: None,
+            checker_review_open: false,
             codex_model: None,
             codex_models: Vec::new(),
             settings: None,
@@ -750,35 +795,20 @@ impl App {
             if active.finish_requested {
                 return (
                     "Finalizing transcription",
-                    "Captured audio is being transcribed. The document remains protected until the final transcript is ready.",
+                    "Transcribing captured audio. Editing stays locked.",
                 );
             }
 
             return match active.intent {
-                EditIntent::Insert => (
-                    "Dictating",
-                    "Listening for dictation. Release Space to finish; Escape cancels without inserting.",
-                ),
-                EditIntent::Command => (
-                    "Voice command",
-                    "Listening for a contextual command. Release C to finish; Escape cancels.",
-                ),
+                EditIntent::Insert => ("Dictating", "Release Space to finish · Esc to cancel"),
+                EditIntent::Command => ("Voice command", "Release C to finish · Esc to cancel"),
             };
         }
 
         match self.mode {
-            Mode::Normal => (
-                "Normal mode",
-                "Typing is disabled. Navigate or select text; press I to type, hold Space to dictate, or hold C for a contextual voice command.",
-            ),
-            Mode::Insert => (
-                "Insert mode",
-                "Typing edits the document. Press Escape to return to Normal mode.",
-            ),
-            Mode::Command => (
-                "Typed command",
-                "Describe a cursor-relative edit, then press Enter. Escape cancels.",
-            ),
+            Mode::Normal => ("Normal mode", "I insert · Space dictate · C voice command"),
+            Mode::Insert => ("Insert mode", "Esc returns to Normal mode"),
+            Mode::Command => ("Typed command", "Enter apply · Esc cancel"),
         }
     }
 
@@ -786,6 +816,7 @@ impl App {
         self.mode == Mode::Normal
             && self.window_focused
             && self.settings.is_none()
+            && !self.checker_review_open
             && self.discard_action.is_none()
             && self.external_file_change.is_none()
     }
@@ -825,9 +856,10 @@ impl App {
 
     /// Applies the modal input shields in priority order.
     ///
-    /// Discard confirmation deliberately wins over Settings, and Settings wins
-    /// over the external-file conflict. Keeping that order here makes the
-    /// security boundary visible without mixing it into normal message routing.
+    /// Discard confirmation deliberately wins over Settings, which wins over
+    /// the external-file conflict and then the checker review. Keeping that
+    /// order here makes the security boundary visible without mixing it into
+    /// normal message routing.
     fn message_is_blocked_by_modal(&self, message: &Message) -> bool {
         if self.discard_action.is_some() && !message.is_allowed_during_discard_confirmation() {
             return true;
@@ -837,10 +869,19 @@ impl App {
             return true;
         }
 
-        self.external_file_change.is_some()
+        if self.external_file_change.is_some()
             && self.discard_action.is_none()
             && self.settings.is_none()
             && !message.is_allowed_during_external_change_confirmation()
+        {
+            return true;
+        }
+
+        self.checker_review_open
+            && self.discard_action.is_none()
+            && self.settings.is_none()
+            && self.external_file_change.is_none()
+            && !message.is_allowed_during_checker_review()
     }
 
     /// Routes one accepted message to the smallest state transition that owns
@@ -929,6 +970,14 @@ impl App {
             Message::SubmitCommand => self.submit_typed_command(),
             Message::InsertLastTranscript => self.insert_last_transcript(),
             Message::DismissNotice => self.dismiss_notice(),
+            Message::OpenCheckerReview => self.open_checker_review(),
+            Message::CloseCheckerReview => self.close_checker_review(),
+            Message::ApplyCheckerSuggestion {
+                lint_index,
+                suggestion_index,
+            } => self.apply_checker_suggestion(lint_index, suggestion_index),
+            Message::IgnoreCheckerLint { lint_index } => self.ignore_checker_lint(lint_index),
+            Message::IgnoreCheckerKind { lint_index } => self.ignore_checker_kind(lint_index),
 
             // Window and worker maintenance (also allowed through modal shields).
             Message::RefreshNormalCursor => self.refresh_normal_cursor(),
@@ -1040,7 +1089,8 @@ impl App {
     }
 
     /// Dismisses exactly one modal in the same priority order as the update
-    /// shield: discard confirmation, Settings, then an external-file conflict.
+    /// shield: discard confirmation, Settings, an external-file conflict, then
+    /// checker review.
     fn dismiss_modal_on_escape(&mut self) -> Option<Task<Message>> {
         if self.discard_action.take().is_some() {
             self.set_transient_notice(Notice::new(
@@ -1068,6 +1118,11 @@ impl App {
                     "Use Save As to preserve both versions, or reopen the file to load the disk version.",
                 ),
             );
+            return Some(operation::focus(EDITOR_ID));
+        }
+
+        if self.checker_review_open {
+            self.checker_review_open = false;
             return Some(operation::focus(EDITOR_ID));
         }
 

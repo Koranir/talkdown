@@ -1,5 +1,6 @@
 //! Stateless window composition and reusable presentation components.
 
+pub(super) mod checker;
 mod modals;
 mod settings;
 
@@ -7,9 +8,9 @@ use super::input::editor_binding;
 use super::presentation::{compact_copy, compact_tail_copy};
 use super::{
     App, BODY_SIZE, CAPTION_SIZE, CHECKER_PILL_ID, CODEX_PILL_ID, COMMAND_ID, EDITOR_FONT,
-    EDITOR_ID, LEAD_SIZE, MODE_PILL_ID, Message, Mode, ModelSettingsView, READING_FONT,
-    SETTINGS_BUTTON_ID, SPEECH_PILL_ID, SpeechTrigger, UI_BOLD_FONT, UI_FONT, UI_SEMIBOLD_FONT,
-    UiState, ui,
+    EDITOR_ID, ICON_FONT, LEAD_SIZE, MODE_PILL_ID, Message, Mode, ModelSettingsView, NEW_BUTTON_ID,
+    OPEN_BUTTON_ID, READING_FONT, SAVE_AS_BUTTON_ID, SAVE_BUTTON_ID, SETTINGS_BUTTON_ID,
+    SPEECH_PILL_ID, SpeechTrigger, UI_BOLD_FONT, UI_FONT, UI_SEMIBOLD_FONT, UiState, ui,
 };
 use crate::checker::CheckingProvider;
 use crate::edit::EditIntent;
@@ -21,6 +22,7 @@ use iced::widget::{
     tooltip,
 };
 use iced::{Border, Center, Color, Element, Fill, FillPortion, Font, Left, Right, Top};
+use lucide_icons::Icon;
 
 use std::ffi;
 use std::path::Path;
@@ -33,13 +35,13 @@ impl App {
     }
 
     fn workspace<'a>(&'a self, document: &DocumentPresentation) -> Element<'a, Message> {
-        let mut workspace = column![self.toolbar(document)].spacing(8);
+        let mut workspace = column![self.toolbar(document)].spacing(6);
         workspace = workspace.push(self.editor());
 
         if let Some(command) = self.command_panel() {
             workspace = workspace.push(command);
         }
-        if !self.notice.contextual_only {
+        if !self.notice.contextual_only && self.notice.is_sticky() {
             workspace = workspace.push(self.notice_banner());
         }
 
@@ -61,44 +63,52 @@ impl App {
         container(
             row![
                 self.mode_indicator(),
-                column![
-                    text(document.name.clone())
-                        .font(UI_BOLD_FONT)
-                        .size(LEAD_SIZE)
-                        .color(ui::TEXT)
-                        .width(Fill)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                    text(document.location.clone())
-                        .font(UI_FONT)
-                        .size(BODY_SIZE)
-                        .color(ui::SUBTLE)
-                        .width(Fill)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                ]
-                .spacing(2)
-                .width(Fill),
-                quiet_toolbar_button("New", (!self.file_busy).then_some(Message::NewFile),),
-                quiet_toolbar_button("Open", (!self.file_busy).then_some(Message::OpenFile),),
-                button(button_label("Save", UI_FONT, BODY_SIZE))
-                    .padding([7, 12])
-                    .height(34)
-                    .style(move |theme, status| {
-                        if dirty {
-                            ui::primary_button(theme, status)
-                        } else {
-                            ui::quiet_button(theme, status)
-                        }
-                    })
-                    .on_press_maybe((!self.file_busy).then_some(Message::SaveFile)),
-                quiet_toolbar_button("Save as", (!self.file_busy).then_some(Message::SaveFileAs),),
+                text(document.name.clone())
+                    .font(UI_BOLD_FONT)
+                    .size(LEAD_SIZE)
+                    .color(ui::TEXT)
+                    .width(Fill)
+                    .wrapping(iced::widget::text::Wrapping::None),
+                toolbar_action(
+                    NEW_BUTTON_ID,
+                    Icon::FilePlus2,
+                    "New",
+                    "Blank document",
+                    (!self.file_busy).then_some(Message::NewFile),
+                    false,
+                ),
+                toolbar_action(
+                    OPEN_BUTTON_ID,
+                    Icon::FolderOpen,
+                    "Open",
+                    "Ctrl/Cmd+O",
+                    (!self.file_busy).then_some(Message::OpenFile),
+                    false,
+                ),
+                toolbar_action(
+                    SAVE_BUTTON_ID,
+                    Icon::Save,
+                    "Save",
+                    "Ctrl/Cmd+S",
+                    (!self.file_busy).then_some(Message::SaveFile),
+                    dirty,
+                ),
+                toolbar_action(
+                    SAVE_AS_BUTTON_ID,
+                    Icon::SaveAll,
+                    "Save as",
+                    "Ctrl/Cmd+Shift+S",
+                    (!self.file_busy).then_some(Message::SaveFileAs),
+                    false,
+                ),
                 self.settings_toolbar_control(),
             ]
             .spacing(6)
             .align_y(Center),
         )
-        .height(58)
+        .height(46)
         .align_y(Center)
-        .padding([8, 10])
+        .padding([6, 10])
         .style(ui::raised)
         .into()
     }
@@ -146,7 +156,11 @@ impl App {
         let (can_open, help) = self.settings_availability();
 
         container(contextual_tooltip(
-            quiet_toolbar_button("Settings", can_open.then_some(Message::OpenSettings)),
+            icon_button(
+                Icon::Settings2,
+                can_open.then_some(Message::OpenSettings),
+                false,
+            ),
             "Settings",
             help,
             None,
@@ -158,34 +172,19 @@ impl App {
 
     fn settings_availability(&self) -> (bool, &'static str) {
         if self.active_utterance.is_some() {
-            return (
-                false,
-                "Finish or cancel the current recording before opening settings.",
-            );
+            return (false, "Finish the recording first");
         }
         if self.mode == Mode::Command {
-            return (
-                false,
-                "Submit or cancel the typed command before opening settings.",
-            );
+            return (false, "Finish the command first");
         }
         if self.file_busy {
-            return (
-                false,
-                "Wait for the current file operation to finish before opening settings.",
-            );
+            return (false, "File action in progress");
         }
         if !self.pending.is_empty() {
-            return (
-                false,
-                "Wait for the current Codex edit to finish before changing its model.",
-            );
+            return (false, "Codex edit in progress");
         }
 
-        (
-            true,
-            "Adjust appearance, dictation checking, speech, and the Codex model. Shortcut: Ctrl/Cmd+,",
-        )
+        (true, "Ctrl/Cmd+,")
     }
 
     fn notice_banner(&self) -> Element<'_, Message> {
@@ -195,70 +194,61 @@ impl App {
         } else {
             notice_state.color()
         };
+        let notice_icon = match notice_state {
+            UiState::Success | UiState::Ready => Icon::CheckCircle,
+            UiState::Warning => Icon::AlertTriangle,
+            UiState::Error | UiState::Offline => Icon::CircleX,
+            UiState::Listening => Icon::AudioLines,
+            UiState::Working => Icon::Loader,
+            UiState::Info => Icon::Info,
+        };
         let mut notice_copy = column![
             text(&self.notice.title)
-                .font(UI_BOLD_FONT)
-                .size(LEAD_SIZE)
+                .font(UI_SEMIBOLD_FONT)
+                .size(BODY_SIZE)
                 .color(ui::TEXT),
             text(&self.notice.detail)
                 .font(UI_FONT)
                 .size(BODY_SIZE)
-                .line_height(1.35)
                 .color(ui::SECONDARY),
         ]
-        .spacing(2)
+        .spacing(1)
         .width(Fill);
         if let Some(recovery) = self.notice.recovery.as_deref() {
             notice_copy = notice_copy.push(
-                text(format!("Next: {recovery}"))
+                text(recovery)
                     .font(UI_FONT)
-                    .size(BODY_SIZE)
-                    .line_height(1.35)
+                    .size(CAPTION_SIZE)
                     .color(notice_color),
             );
         }
 
-        let notice_source = container(
-            container(
-                text(format!(
-                    "{} · {}",
-                    self.notice.source.label(),
-                    notice_state.label()
-                ))
-                .font(EDITOR_FONT)
-                .size(CAPTION_SIZE)
-                .wrapping(iced::widget::text::Wrapping::None)
-                .color(notice_color),
-            )
-            .padding([5, 8])
-            .style(move |_| ui::status_pill(notice_color)),
-        )
-        .width(160)
-        .align_x(Left);
-        let mut notice_row = row![notice_source, notice_copy]
+        let icon = container(lucide_icon(notice_icon, LEAD_SIZE, notice_color))
+            .width(30)
+            .height(30)
+            .align_x(Center)
+            .align_y(Center)
+            .style(move |_| ui::icon_tile(notice_color));
+        let mut notice_row = row![icon, notice_copy]
             .spacing(10)
             .align_y(Center)
             .width(Fill);
         if self.notice.is_sticky() {
-            notice_row = notice_row.push(
-                button(fixed_button_label(
-                    if self.queued_notice.is_some() {
-                        "Next issue"
-                    } else {
-                        "Dismiss"
-                    },
-                    UI_FONT,
-                    BODY_SIZE,
-                ))
-                .width(84)
-                .height(32)
-                .padding([6, 10])
-                .style(ui::quiet_button)
-                .on_press(Message::DismissNotice),
-            );
+            let has_next = self.queued_notice.is_some();
+            notice_row = notice_row.push(contextual_tooltip(
+                icon_button(
+                    if has_next { Icon::ArrowRight } else { Icon::X },
+                    Some(Message::DismissNotice),
+                    false,
+                ),
+                if has_next { "Next issue" } else { "Dismiss" },
+                "",
+                None,
+                tooltip::Position::Top,
+            ));
         }
         let notice = container(notice_row)
-            .padding([9, 11])
+            .padding([7, 9])
             .style(move |_| ui::notice(notice_state));
 
         notice.into()
@@ -295,11 +285,19 @@ impl App {
         (self.mode == Mode::Command).then(|| {
             container(
                 column![
-                    text("Contextual edit")
-                        .font(UI_SEMIBOLD_FONT)
-                        .size(BODY_SIZE)
-                        .color(ui::WARNING),
-                    text_input("e.g. replace the previous sentence with…", &self.command)
+                    row![
+                        lucide_icon(Icon::Sparkles, BODY_SIZE, ui::WARNING),
+                        text("Context edit")
+                            .font(UI_SEMIBOLD_FONT)
+                            .size(BODY_SIZE)
+                            .color(ui::TEXT),
+                        space().width(Fill),
+                        shortcut_hint("Enter", "Apply"),
+                        shortcut_hint("Esc", "Cancel"),
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                    text_input("Describe the change…", &self.command)
                         .id(COMMAND_ID)
                         .font(READING_FONT)
                         .size(LEAD_SIZE)
@@ -344,29 +342,47 @@ impl App {
 
     fn voice_header(&self) -> Element<'_, Message> {
         let checker_state = if self.checking_provider == CheckingProvider::Harper
-            && self.last_harper_audit.is_some()
+            && self.checker_review.is_some()
         {
             UiState::Success
         } else {
             UiState::Ready
         };
         let voice_identity = row![
-            text("Voice workspace")
-                .font(UI_SEMIBOLD_FONT)
-                .size(BODY_SIZE)
-                .color(ui::TEXT),
+            row![
+                lucide_icon(Icon::Mic, BODY_SIZE, ui::PRIMARY),
+                text("Voice")
+                    .font(UI_SEMIBOLD_FONT)
+                    .size(BODY_SIZE)
+                    .color(ui::TEXT),
+            ]
+            .spacing(6)
+            .align_y(Center),
             service_chip(
                 SPEECH_PILL_ID,
                 "Speech",
                 self.speech_state,
                 &self.speech_status,
+                None,
+                None,
             ),
-            service_chip(CODEX_PILL_ID, "Codex", self.codex_state, &self.codex_status,),
+            service_chip(
+                CODEX_PILL_ID,
+                "Codex",
+                self.codex_state,
+                &self.codex_status,
+                None,
+                None,
+            ),
             service_chip(
                 CHECKER_PILL_ID,
                 "Checker",
                 checker_state,
                 &self.checker_status,
+                (self.checking_provider == CheckingProvider::Harper
+                    && self.checker_review.is_some())
+                .then_some(Message::OpenCheckerReview),
+                self.checker_review.as_ref(),
             ),
         ]
         .spacing(8)
@@ -385,27 +401,32 @@ impl App {
     fn insert_last_control(&self) -> Element<'static, Message> {
         let can_insert = self.active_utterance.is_none() && !self.last_transcript.trim().is_empty();
         let help = if self.active_utterance.is_some() {
-            "Finish or cancel the current recording before inserting the retained transcript."
+            "Finish the recording first"
         } else if self.last_transcript.trim().is_empty() {
-            "No retained transcript is available yet."
+            "No transcript yet"
         } else {
-            "Insert the retained transcript at the current cursor."
+            "Insert at the cursor"
         };
 
         contextual_tooltip(
-            button(fixed_button_label("Insert last", UI_FONT, BODY_SIZE))
-                .width(96)
-                .height(32)
-                .padding([6, 10])
-                .style(move |theme, status| {
-                    if can_insert {
-                        ui::primary_button(theme, status)
-                    } else {
-                        ui::quiet_button(theme, status)
-                    }
-                })
-                .on_press_maybe(can_insert.then_some(Message::InsertLastTranscript)),
-            "Insert retained transcript",
+            button(fixed_icon_label(
+                Icon::ClipboardPaste,
+                "Insert last",
+                UI_FONT,
+                BODY_SIZE,
+            ))
+            .width(112)
+            .height(32)
+            .padding([6, 10])
+            .style(move |theme, status| {
+                if can_insert {
+                    ui::primary_button(theme, status)
+                } else {
+                    ui::quiet_button(theme, status)
+                }
+            })
+            .on_press_maybe(can_insert.then_some(Message::InsertLastTranscript)),
+            "Insert last",
             help,
             None,
             tooltip::Position::Top,
@@ -421,10 +442,9 @@ impl App {
             container(saved_status).width(FillPortion(1)).align_x(Left),
             container(
                 text(format!(
-                    "Ln {}, Col {}  ·  rev {}  ·  UTF-8",
+                    "Ln {}, Col {}",
                     cursor.position.line + 1,
                     cursor.position.column + 1,
-                    self.document.revision(),
                 ))
                 .width(Fill)
                 .font(EDITOR_FONT)
@@ -486,11 +506,11 @@ impl App {
                 "Saved state"
             },
             if dirty {
-                "The editor contains changes that are not on disk yet."
+                "Not saved to disk"
             } else if self.file.is_some() {
-                "All current changes are on disk."
+                "Up to date"
             } else {
-                "The new document has no unsaved changes."
+                "No changes"
             },
             None,
             tooltip::Position::Top,
@@ -519,6 +539,11 @@ impl App {
         if self.external_file_change.is_some() {
             return stack([workspace, modals::external_file_change(document_name)]).into();
         }
+        if self.checker_review_open
+            && let Some(review) = self.checker_review.as_ref()
+        {
+            return stack([workspace, checker::modal(review.clone())]).into();
+        }
 
         workspace
     }
@@ -546,7 +571,6 @@ impl App {
 
 struct DocumentPresentation {
     name: String,
-    location: String,
     dirty: bool,
 }
 
@@ -558,15 +582,8 @@ impl DocumentPresentation {
             .and_then(Path::file_name)
             .and_then(ffi::OsStr::to_str)
             .unwrap_or("Untitled");
-        let location = app
-            .file
-            .as_deref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "Not saved to disk".into());
-
         Self {
             name: compact_copy(name, 48),
-            location: compact_copy(&location, 54),
             dirty: app.has_unsaved_changes(),
         }
     }
@@ -580,6 +597,7 @@ struct VoiceTranscript {
     label: &'static str,
     copy: String,
     color: Color,
+    empty: bool,
 }
 
 impl VoiceTranscript {
@@ -589,6 +607,7 @@ impl VoiceTranscript {
                 label: "Live transcript",
                 copy: compact_tail_copy(&app.partial_transcript, 240),
                 color: ui::TEXT,
+                empty: false,
             };
         }
         if !app.last_transcript.is_empty() {
@@ -596,13 +615,15 @@ impl VoiceTranscript {
                 label: "Last transcript",
                 copy: compact_copy(&app.last_transcript, 240),
                 color: ui::SECONDARY,
+                empty: false,
             };
         }
 
         Self {
             label: "Transcript",
-            copy: compact_copy("Live speech appears here while you hold Space or C.", 240),
+            copy: String::new(),
             color: ui::SUBTLE,
+            empty: true,
         }
     }
 }
@@ -634,18 +655,32 @@ impl VoiceActivity {
 }
 
 fn voice_transcript_block(transcript: VoiceTranscript) -> Element<'static, Message> {
+    let content: Element<'static, Message> = if transcript.empty {
+        row![
+            lucide_icon(Icon::AudioLines, BODY_SIZE, ui::SUBTLE),
+            shortcut_hint("Space", "Dictate"),
+            shortcut_hint("C", "Command"),
+        ]
+        .spacing(10)
+        .align_y(Center)
+        .into()
+    } else {
+        text(transcript.copy)
+            .font(READING_FONT)
+            .size(LEAD_SIZE)
+            .line_height(1.35)
+            .color(transcript.color)
+            .into()
+    };
+
     column![
         text(transcript.label)
             .font(UI_SEMIBOLD_FONT)
             .size(CAPTION_SIZE)
             .color(ui::SUBTLE),
-        text(transcript.copy)
-            .font(READING_FONT)
-            .size(LEAD_SIZE)
-            .line_height(1.35)
-            .color(transcript.color),
+        content,
     ]
-    .spacing(2)
+    .spacing(3)
     .width(Fill)
     .into()
 }
@@ -685,16 +720,98 @@ fn fixed_button_label(label: &'static str, font: Font, size: f32) -> Element<'st
         .into()
 }
 
-fn quiet_toolbar_button(
-    label: &'static str,
-    on_press: Option<Message>,
-) -> Element<'static, Message> {
-    button(button_label(label, UI_FONT, BODY_SIZE))
-        .padding([7, 11])
-        .height(34)
-        .style(ui::quiet_button)
-        .on_press_maybe(on_press)
+pub(super) fn lucide_icon(icon: Icon, size: f32, color: Color) -> Element<'static, Message> {
+    text(char::from(icon).to_string())
+        .font(ICON_FONT)
+        .size(size)
+        .color(color)
         .into()
+}
+
+pub(super) fn fixed_icon_label(
+    icon: Icon,
+    label: &'static str,
+    font: Font,
+    size: f32,
+) -> Element<'static, Message> {
+    container(
+        row![
+            lucide_icon(icon, size, ui::TEXT),
+            text(label).font(font).size(size),
+        ]
+        .spacing(7)
+        .align_y(Center),
+    )
+    .width(Fill)
+    .height(Fill)
+    .align_x(Center)
+    .align_y(Center)
+    .into()
+}
+
+fn icon_button(icon: Icon, on_press: Option<Message>, primary: bool) -> Element<'static, Message> {
+    container(
+        button(
+            container(lucide_icon(icon, LEAD_SIZE, ui::TEXT))
+                .width(Fill)
+                .height(Fill)
+                .align_x(Center)
+                .align_y(Center),
+        )
+        .width(Fill)
+        .height(Fill)
+        .padding(0)
+        .style(move |theme, status| {
+            if primary {
+                ui::primary_button(theme, status)
+            } else {
+                ui::quiet_button(theme, status)
+            }
+        })
+        .on_press_maybe(on_press),
+    )
+    .width(34)
+    .height(34)
+    .into()
+}
+
+fn toolbar_action(
+    id: &'static str,
+    icon: Icon,
+    title: &'static str,
+    detail: &'static str,
+    on_press: Option<Message>,
+    primary: bool,
+) -> Element<'static, Message> {
+    container(contextual_tooltip(
+        icon_button(icon, on_press, primary),
+        title,
+        detail,
+        None,
+        tooltip::Position::Bottom,
+    ))
+    .id(id)
+    .into()
+}
+
+fn shortcut_hint(key: &'static str, action: &'static str) -> Element<'static, Message> {
+    row![
+        container(
+            text(key)
+                .font(EDITOR_FONT)
+                .size(CAPTION_SIZE)
+                .color(ui::TEXT),
+        )
+        .padding([3, 6])
+        .style(ui::keycap),
+        text(action)
+            .font(UI_FONT)
+            .size(CAPTION_SIZE)
+            .color(ui::SECONDARY),
+    ]
+    .spacing(5)
+    .align_y(Center)
+    .into()
 }
 
 fn contextual_tooltip<'a>(
@@ -709,28 +826,33 @@ fn contextual_tooltip<'a>(
             .font(UI_SEMIBOLD_FONT)
             .size(BODY_SIZE)
             .color(ui::TEXT),
-        text(detail)
-            .font(UI_FONT)
-            .size(BODY_SIZE)
-            .line_height(1.35)
-            .color(ui::SECONDARY),
     ]
-    .width(340)
-    .spacing(3);
+    .width(260)
+    .spacing(2);
+
+    if !detail.is_empty() {
+        copy = copy.push(
+            text(detail)
+                .font(UI_FONT)
+                .size(CAPTION_SIZE)
+                .line_height(1.25)
+                .color(ui::SECONDARY),
+        );
+    }
 
     if let Some(recovery) = recovery {
         copy = copy.push(
             text(recovery)
                 .font(UI_FONT)
-                .size(BODY_SIZE)
-                .line_height(1.35)
+                .size(CAPTION_SIZE)
+                .line_height(1.25)
                 .color(ui::WARNING),
         );
     }
 
     tooltip(target, copy, position)
         .gap(8)
-        .padding(10)
+        .padding(8)
         .style(ui::tooltip)
         .into()
 }
@@ -740,6 +862,8 @@ fn service_chip<'a>(
     name: &'static str,
     state: UiState,
     detail: &'a str,
+    on_press: Option<Message>,
+    checker_review: Option<&super::CheckerReview>,
 ) -> Element<'a, Message> {
     let color = state.color();
     let dot = container(space().width(7).height(7)).style(move |_| {
@@ -752,39 +876,70 @@ fn service_chip<'a>(
     } else {
         ui::SECONDARY
     };
-    let target = container(
-        row![
-            dot,
-            text(format!("{name} · {}", state.label()))
-                .font(EDITOR_FONT)
-                .size(CAPTION_SIZE)
-                .color(label_color),
-        ]
-        .spacing(6)
-        .align_y(Center),
-    )
-    .id(id)
-    .padding([5, 8])
-    .style(move |_| ui::status_pill(color));
+    let chip_label = if matches!(state, UiState::Ready | UiState::Success) {
+        name.to_owned()
+    } else {
+        format!("{name} · {}", state.label())
+    };
+    let mut chip_content = row![
+        dot,
+        text(chip_label)
+            .font(EDITOR_FONT)
+            .size(CAPTION_SIZE)
+            .color(label_color),
+    ]
+    .spacing(6)
+    .align_y(Center);
+    if state == UiState::Success {
+        chip_content = chip_content.push(lucide_icon(Icon::Check, CAPTION_SIZE, color));
+    }
+    let pill = container(chip_content)
+        .id(id)
+        .padding([5, 8])
+        .style(move |_| ui::status_pill(color));
+    let target: Element<'a, Message> = match on_press {
+        Some(message) => button(pill)
+            .padding(0)
+            .style(ui::bare_button)
+            .on_press(message)
+            .into(),
+        None => pill.into(),
+    };
     let recovery = if matches!(state, UiState::Error | UiState::Offline) {
         match name {
-            "Speech" => Some(
-                "Dictation is unavailable. Typing and file actions still work. Check the local model and microphone configuration, then restart Talkdown.",
-            ),
-            "Codex" => Some(
-                "AI refinement is unavailable. Raw dictation and typed editing still work. Check `codex login status` and connectivity.",
-            ),
+            "Speech" => Some("Typing still works. Check the model and microphone."),
+            "Codex" => Some("Raw dictation still works. Check Codex sign-in."),
             _ => None,
         }
     } else {
         None
     };
 
+    let detail = detail
+        .strip_prefix(name)
+        .and_then(|detail| detail.strip_prefix(": "))
+        .unwrap_or(detail);
+    let detail = if matches!(state, UiState::Error | UiState::Offline) {
+        "Unavailable"
+    } else {
+        detail
+    };
+
+    if let Some(review) = checker_review {
+        return tooltip(
+            target,
+            checker::tooltip_preview(review),
+            tooltip::Position::Top,
+        )
+        .gap(8)
+        .padding(8)
+        .style(ui::tooltip)
+        .into();
+    }
+
     contextual_tooltip(
         target,
         match name {
-            "Speech" => "Speech service",
-            "Codex" => "Codex service",
             "Checker" => "Dictation checker",
             _ => name,
         },

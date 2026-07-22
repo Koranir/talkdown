@@ -53,8 +53,9 @@ not wait for it. A missing model is an in-app status error, not a process exit.
 Talkdown requests the host's Atkinson Hyperlegible Next Regular, Semibold, and
 Bold for accessible chrome and controls, Libertinus Sans for
 transcript/command prose, and iced's generic `Font::MONOSPACE` family for document text and compact
-status metadata. It uses only three logical text sizes: 11 px for captions,
-14 px for body/control copy, and 17 px for lead/editor text. The font files are
+status metadata. The Lucide icon font is bundled for the compact toolbar,
+alerts, and prompt affordances. It uses only three logical text sizes: 11 px for captions,
+14 px for body/control copy, and 17 px for lead/editor text. The text font files are
 not bundled. A missing family falls back through the host font system, so check
 the actual resolved faces before diagnosing cross-machine spacing or snapshot
 differences. On Linux, `fc-match` can help inspect that resolution.
@@ -69,6 +70,12 @@ adjustment reapplies the window's 940 × 640 logical minimum and actively grows 
 dimension after zooming; it does not alter the document, cursor, or revision.
 Routine zoom feedback is contextual and does not open a banner. A successful
 shortcut adjustment persists both zoom scopes for the next launch.
+
+Conventional editor navigation remains available in Normal and Insert modes.
+Arrow, Home, End, Page Up, and Page Down move normally; Shift extends the
+selection. Ctrl+Left/Right jumps by word and Ctrl+Home/End jumps to the document
+boundary on Windows and Linux. On macOS, iced follows the native equivalents:
+Option+Left/Right for words and Command+Left/Right for line boundaries.
 
 Dirty New, Open, and native window-close requests open an opaque confirmation
 modal. Keep editing or Escape preserves the document; the danger-styled action
@@ -111,9 +118,15 @@ span. It auto-applies only conservative single-suggestion fixes plus missing
 whitespace at either transcript seam. Its latest in-memory
 audit records every applied finding and every skipped finding, with explicit
 outside-sentence, policy, ambiguity, missing-suggestion, overlap, or
-document-validation reasons;
-hover the Checker pill to inspect the bounded presentation. Never persist or externally log that
-audit because Harper messages can repeat dictated text. Choosing Codex enables
+document-validation reasons. The Checker pill keeps the summary short and its
+tooltip previews up to three applied and three unapplied findings; click it to
+open the scrollable review, inspect every current finding, and apply an offered
+replacement. Each Apply is revision-checked, undoable, and followed by a fresh
+local lint pass. Ignore once filters one exact current finding; Ignore kind
+filters that category through subsequent passes in the same review. Both remain
+visible under `IGNORED · THIS REVIEW`, mutate no document text, and disappear
+when a new review replaces the current one. Never persist or externally log that audit or review
+state because Harper messages can repeat dictated text. Choosing Codex enables
 the richer context-aware refinement path. Contextual commands always use Codex.
 The Codex choices come from the connected app-server's `model/list` response;
 changing the selection starts a new ephemeral thread after Apply. While the
@@ -135,12 +148,20 @@ Insert/Command. Preserve both guards when touching focus, subscriptions,
 operations, or editor IDs.
 
 Routine mode guidance is a tooltip over the mode indicator and its contextual
-notice is not rendered as a banner. Speech and Codex pill tooltips expose the
+notice is not rendered as a banner. Routine info, working, and success notices
+also stay out of the workspace; sticky failures retain the compact foreground
+alert. Speech and Codex pill tooltips expose the
 complete service status and recovery guidance, replacing duplicate inline
 details and idle activity. Warnings and errors still require a foreground
 notice as well as the tooltip. Settings, Insert last, and saved state also have
-contextual tooltips; keep the disabled Insert-last explanation in sync with its
+concise contextual tooltips. Voice and typed-command prompts use keycap-style
+shortcut elements; keep the disabled Insert-last explanation in sync with its
 `on_press_maybe` condition.
+Routine Harper results belong to the Checker pill. A retained audit adds its
+check indicator and bounded applied/unapplied hover preview; clicking opens the
+complete review instead of expanding every lint in a tooltip or banner. Applied and unchanged safe checks do
+not create a foreground banner. Local application rejection remains a sticky
+safety error.
 
 ## Codex auth and protocol
 
@@ -244,8 +265,8 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 87 tests: 74 run and thirteen are
-ignored. The no-default-feature build discovers 80: 70 run and ten are
+The default-feature build currently discovers 88 tests: 75 run and thirteen are
+ignored. The no-default-feature build discovers 81: 71 run and ten are
 ignored. The README lists all thirteen ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a
@@ -276,7 +297,7 @@ baselines `tests/snapshots/main-window-tiny-skia.png`,
 `tests/snapshots/failure-window-tiny-skia.png`, and
 `tests/snapshots/minimum-window-tiny-skia.png`. They respectively cover a
 ready/success state, the hovered Normal-mode tooltip with its routine banner
-collapsed, a hovered applied/ignored Checker audit, the staged settings modal,
+collapsed, the scrollable Checker review, the staged settings modal,
 an unsaved-discard confirmation, a model-download failure with recovery,
 an unavailable Codex refinement with its
 raw transcript preserved, and the maximum 140% scale state at the enforced
@@ -284,7 +305,7 @@ raw transcript preserved, and the maximum 140% scale state at the enforced
 minimum fixture hovers the offline Speech pill while its foreground error
 notice remains visible and also asserts that critical controls are visible,
 the voice heading and service chips align vertically, and footer cursor
-metadata remains centered. Another fixture hovers the Checker pill after a
+metadata remains centered. Another fixture opens the Checker review after a
 pass containing both applied and ignored findings. Run all eight with the shared
 `window_snapshot` filter:
 

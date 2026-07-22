@@ -1,6 +1,6 @@
 //! Staged Settings composition and its reusable preference controls.
 
-use super::{button_label, fixed_button_label};
+use super::{button_label, fixed_button_label, lucide_icon};
 use crate::app::presentation::compact_copy;
 use crate::app::ui;
 use crate::app::{
@@ -21,6 +21,7 @@ use iced::widget::{
     button, column, container, opaque, pick_list, progress_bar, row, scrollable, space, text,
 };
 use iced::{Center, Color, Element, Fill, Right};
+use lucide_icons::Icon;
 
 use std::path::{Path, PathBuf};
 
@@ -36,7 +37,6 @@ pub(super) fn modal(
             settings_header(),
             container(space()).width(Fill).height(1).style(ui::rule),
             content.preferences,
-            settings_shortcuts(),
             settings_footer(content.apply_state),
         ]
         .spacing(12),
@@ -122,53 +122,37 @@ impl SettingsApplyState {
         (!self.blocked).then_some(Message::ApplySettings)
     }
 
-    fn status_copy(self) -> &'static str {
+    fn status_copy(self) -> Option<&'static str> {
         if !self.codex_model_available {
-            "Choose an available Codex model before applying."
+            Some("Choose an available Codex model.")
         } else if self.blocked {
-            "Finish or cancel the model action before applying."
+            Some("Finish the model action first.")
         } else {
-            "Changes apply together and are saved for the next launch."
+            None
         }
     }
 }
 
 fn settings_header() -> Element<'static, Message> {
-    row![
-        column![
-            text("Settings")
-                .font(UI_BOLD_FONT)
-                .size(LEAD_SIZE)
-                .color(ui::TEXT),
-            text("Saved preferences")
-                .font(UI_FONT)
-                .size(BODY_SIZE)
-                .color(ui::SUBTLE),
-        ]
-        .spacing(2)
-        .width(Fill),
-        container(
-            text("STAGED")
-                .font(EDITOR_FONT)
-                .size(CAPTION_SIZE)
-                .color(ui::PRIMARY),
-        )
-        .padding([5, 8])
-        .style(|_| ui::status_pill(ui::PRIMARY)),
-    ]
-    .align_y(Center)
-    .into()
-}
-
-fn settings_shortcuts() -> Element<'static, Message> {
-    text("Keyboard: +/− text · Ctrl/Cmd +/− UI · W wrap · Enter apply · Escape cancel")
-        .font(UI_FONT)
-        .size(CAPTION_SIZE)
-        .color(ui::SUBTLE)
+    text("Settings")
+        .font(UI_BOLD_FONT)
+        .size(LEAD_SIZE)
+        .color(ui::TEXT)
         .into()
 }
 
 fn settings_footer(state: SettingsApplyState) -> Element<'static, Message> {
+    let status: Element<'static, Message> = state.status_copy().map_or_else(
+        || space().width(Fill).into(),
+        |copy| {
+            text(copy)
+                .font(UI_FONT)
+                .size(CAPTION_SIZE)
+                .color(ui::WARNING)
+                .width(Fill)
+                .into()
+        },
+    );
     let cancel = settings_action_button(
         "Cancel",
         SETTINGS_CANCEL_ID,
@@ -176,24 +160,16 @@ fn settings_footer(state: SettingsApplyState) -> Element<'static, Message> {
         Some(Message::CancelSettings),
     );
     let apply = settings_action_button(
-        "Apply changes",
+        "Apply",
         SETTINGS_APPLY_ID,
         SettingsActionStyle::Primary,
         state.message(),
     );
 
-    row![
-        text(state.status_copy())
-            .font(UI_FONT)
-            .size(CAPTION_SIZE)
-            .color(ui::SUBTLE)
-            .width(Fill),
-        cancel,
-        apply,
-    ]
-    .spacing(8)
-    .align_y(Center)
-    .into()
+    row![status, cancel, apply,]
+        .spacing(8)
+        .align_y(Center)
+        .into()
 }
 
 fn editor_text_scale_preference(value: u16) -> Element<'static, Message> {
@@ -208,11 +184,7 @@ fn editor_text_scale_preference(value: u16) -> Element<'static, Message> {
         adjust: Message::SettingsAdjustTextScale,
     });
 
-    settings_preference(
-        "Editor text",
-        "Resize document text from 80% to 200%. Toolbars and panels stay fixed.",
-        controls,
-    )
+    settings_preference("Editor text", "Document only · 80–200%", controls)
 }
 
 fn interface_scale_preference(value: u16) -> Element<'static, Message> {
@@ -227,11 +199,7 @@ fn interface_scale_preference(value: u16) -> Element<'static, Message> {
         adjust: Message::SettingsAdjustUiScale,
     });
 
-    settings_preference(
-        "Interface scale",
-        "Scale the complete interface from 80% to 140%, including editor text.",
-        controls,
-    )
+    settings_preference("Interface scale", "Whole interface · 80–140%", controls)
 }
 
 fn word_wrap_preference(enabled: bool) -> Element<'static, Message> {
@@ -255,11 +223,7 @@ fn word_wrap_preference(enabled: bool) -> Element<'static, Message> {
     )
     .id(SETTINGS_WRAP_ID);
 
-    settings_preference(
-        "Word wrap",
-        "Wrap long lines visually at the editor edge. The file itself is never reformatted.",
-        control,
-    )
+    settings_preference("Word wrap", "Visual only; file unchanged", control)
 }
 
 fn checker_preference(provider: CheckingProvider) -> Element<'static, Message> {
@@ -273,12 +237,8 @@ fn checker_preference(provider: CheckingProvider) -> Element<'static, Message> {
     )
     .id(SETTINGS_CHECKER_ID);
     let detail = match provider {
-        CheckingProvider::Harper => {
-            "Harper applies conservative grammar fixes locally. It makes no network request; contextual commands still use Codex."
-        }
-        CheckingProvider::Codex => {
-            "Codex uses document context for richer dictation refinement through your ChatGPT subscription."
-        }
+        CheckingProvider::Harper => "Local, conservative grammar fixes",
+        CheckingProvider::Codex => "Context-aware refinement via ChatGPT",
     };
 
     settings_preference("Dictation checker", detail, control)
@@ -345,10 +305,9 @@ fn selected_codex_choice(selected: Option<&str>, models: &[CodexModel]) -> Codex
 fn codex_model_detail(selected: Option<&str>, models: &[CodexModel]) -> String {
     let Some(selected) = selected else {
         return if models.is_empty() {
-            "Use the Codex CLI default. Available models will appear after app-server connects."
-                .to_owned()
+            "CLI default · models load after connection".to_owned()
         } else {
-            "Use the default chosen by the installed Codex CLI.".to_owned()
+            "Use the Codex CLI default".to_owned()
         };
     };
 
@@ -357,18 +316,12 @@ fn codex_model_detail(selected: Option<&str>, models: &[CodexModel]) -> String {
         .find(|entry| entry.model == selected)
         .map(|entry| {
             if entry.description.is_empty() {
-                format!(
-                    "Use {} for contextual commands and optional AI dictation checking.",
-                    entry.display_name
-                )
+                format!("{} · commands and AI checking", entry.display_name)
             } else {
                 compact_copy(&entry.description, 120)
             }
         })
-        .unwrap_or_else(|| {
-            "This saved model is not advertised by the connected Codex CLI. Choose another model before applying."
-                .to_owned()
-        })
+        .unwrap_or_else(|| "Unavailable in the connected Codex CLI".to_owned())
 }
 
 fn codex_model_available(selected: Option<&str>, models: &[CodexModel]) -> bool {
@@ -586,7 +539,7 @@ fn model_selection_actions(
     default_action: Element<'static, Message>,
 ) -> Element<'static, Message> {
     row![
-        text("English-only base model · 148 MB · stored in Talkdown’s app-data directory")
+        text("English · 148 MB · app data")
             .font(UI_FONT)
             .size(CAPTION_SIZE)
             .color(ui::SUBTLE)
@@ -602,11 +555,7 @@ fn model_selection_actions(
 fn model_choose_button(picker_open: bool, download_active: bool) -> Element<'static, Message> {
     container(
         button(fixed_button_label(
-            if picker_open {
-                "Choosing…"
-            } else {
-                "Choose file"
-            },
+            if picker_open { "Choosing…" } else { "Choose" },
             UI_FONT,
             BODY_SIZE,
         ))
@@ -630,24 +579,21 @@ fn default_model_button(
             if cancelling {
                 "Cancelling…"
             } else {
-                "Cancel download"
+                "Cancel"
             },
             (!cancelling).then_some(Message::SettingsCancelModelDownload),
         )
     } else if default_available {
         (
             if default_selected {
-                "Default selected"
+                "Selected"
             } else {
                 "Use default"
             },
             (!default_selected).then_some(Message::SettingsUseDefaultModel),
         )
     } else {
-        (
-            "Download default",
-            Some(Message::SettingsDownloadDefaultModel),
-        )
+        ("Download", Some(Message::SettingsDownloadDefaultModel))
     };
 
     container(
@@ -676,10 +622,10 @@ fn model_download_progress(progress: (u64, u64, bool)) -> Element<'static, Messa
         downloaded as f32 / total as f32
     };
     let status = if cancelling {
-        "Stopping download and removing the partial file…".to_owned()
+        "Stopping…".to_owned()
     } else {
         format!(
-            "Downloading and verifying… {}% · {} / {} MB",
+            "Downloading · {}% · {} / {} MB",
             (fraction * 100.0).floor() as u8,
             downloaded / 1_000_000,
             total / 1_000_000,
@@ -693,10 +639,6 @@ fn model_download_progress(progress: (u64, u64, bool)) -> Element<'static, Messa
                 .size(CAPTION_SIZE)
                 .color(ui::PRIMARY)
                 .width(Fill),
-            text("Your current model stays active until Apply.")
-                .font(UI_FONT)
-                .size(CAPTION_SIZE)
-                .color(ui::SUBTLE),
         ],
         progress_bar(0.0..=1.0, fraction.clamp(0.0, 1.0))
             .length(Fill)
@@ -767,10 +709,17 @@ fn settings_scale_controls(control: SettingsScaleControl) -> Element<'static, Me
         row![scale_down, scale_value, scale_up]
             .spacing(6)
             .align_y(Center),
-        button(text("Reset to 100%").font(UI_FONT).size(CAPTION_SIZE),)
-            .padding([5, 8])
-            .style(ui::quiet_button)
-            .on_press_maybe((reset_delta != 0).then_some(adjust(reset_delta as i16))),
+        button(
+            row![
+                lucide_icon(Icon::RotateCcw, CAPTION_SIZE, ui::SECONDARY),
+                text("Reset").font(UI_FONT).size(CAPTION_SIZE),
+            ]
+            .spacing(5)
+            .align_y(Center),
+        )
+        .padding([5, 8])
+        .style(ui::quiet_button)
+        .on_press_maybe((reset_delta != 0).then_some(adjust(reset_delta as i16))),
     ]
     .spacing(6)
     .align_x(Right)
