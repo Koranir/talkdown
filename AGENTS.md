@@ -77,8 +77,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 85 tests: 72 normal and thirteen
-  ignored. The no-default-feature build discovers 78: 68 normal and ten
+- The default-feature build currently discovers 87 tests: 74 normal and thirteen
+  ignored. The no-default-feature build discovers 80: 70 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo test` passes with the default feature and with
   `--no-default-features`.
@@ -96,6 +96,10 @@ Optimize in this order:
 - `src/document.rs`: iced content wrapper, UTF-8 cursor/selection snapshots,
   history, trusted replacement, one-step refinement amendment.
 - `src/edit.rs`: tiny Codex edit language and exact-target resolution.
+- `src/event_stream.rs`: async-waking worker-to-iced event channels with stable
+  subscription identities and deterministic nonblocking test drains.
+- `src/file_watch.rs`: bounded OS file-watcher events and parent-directory watch
+  management that survives atomic file replacement.
 - `src/model.rs`: platform paths, atomically persisted speech/checker/Codex
   preferences, pinned default-model metadata, verified download, progress, and
   cancellation.
@@ -144,6 +148,15 @@ Optimize in this order:
 - Every buffer replacement advances `App::buffer_generation`. File tasks and
   pending semantic edits must carry that generation so results from one file
   can never affect another.
+- Open files use the platform-recommended `notify` watcher on their parent
+  directory so normal writes and atomic rename-based saves are detected without
+  polling. Watcher callbacks enqueue bounded events only; the UI asynchronously
+  re-reads the target before acting. A clean buffer reloads changed text
+  automatically; a dirty buffer remains untouched behind an opaque warning
+  until the user keeps it or explicitly reloads from disk. File reads also
+  carry a separate monitor generation so an observation started before Open or
+  Save can never replace newer state. Missing or unreadable files preserve the
+  buffer and surface recovery instead of treating the failure as empty content.
 - New, Open, and native window-close requests must never silently discard a
   dirty buffer. Keep the opaque confirmation layer, make Escape/Keep editing
   non-destructive, and require the explicit danger-styled discard action.
@@ -309,6 +322,12 @@ Optimize in this order:
 - The CPAL callback may downmix and enqueue bounded chunks only. It must never
   block, perform inference, touch iced state, or grow an unbounded buffer.
 - UI, capture, Whisper, and Codex work remain separated by message channels.
+- Speech, Codex, model-download, and file-watch results wake iced through
+  source-owned subscriptions; do not restore a fixed-rate UI polling loop.
+  Replacing a Speech/Codex bridge must also replace its stable subscription
+  identity so iced retires the old stream. Rate-limit high-frequency visual
+  signals at their producer (the microphone meter is capped at 20 Hz) instead
+  of polling every source globally.
 - Tag every audio chunk with its utterance ID. Commands win channel ties;
   partial inference uses a one-item replaceable queue and must not block capture.
 - Partial hypotheses replace the preview; never append unstable hypotheses.
@@ -392,7 +411,7 @@ cargo clippy --all-targets -- -D warnings
 cargo check --no-default-features
 ```
 
-Twelve tests are ignored in the default-feature build. Run the handshake freely
+Thirteen tests are ignored in the default-feature build. Run the handshake freely
 when relevant; the live edit test consumes one Codex turn and should be run
 only when protocol behavior changed. Use the exact injected-audio, snapshot,
 and fake-input commands in `docs/development.md`; keep

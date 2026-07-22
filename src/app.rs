@@ -2,6 +2,7 @@ use crate::checker::{CheckingProvider, HarperChecker, IgnoreReason, LintAudit, L
 use crate::codex::{CodexBridge, CodexEvent, CodexModel, CodexRequest, editable_context_range};
 use crate::document::{Document, DocumentSnapshot};
 use crate::edit::{Anchor, EditIntent, ProposedEdit, rebase_exact, resolve};
+use crate::file_watch::{FileWatchEvent, FileWatcher};
 use crate::model::{self, DefaultModelDownload, DownloadError, DownloadEvent, ModelSource};
 use crate::speech::{SpeechBridge, SpeechEvent};
 
@@ -48,6 +49,9 @@ const SETTINGS_APPLY_ID: &str = "talkdown-settings-apply";
 const DISCARD_MODAL_ID: &str = "talkdown-discard-modal";
 const DISCARD_KEEP_ID: &str = "talkdown-discard-keep";
 const DISCARD_CONFIRM_ID: &str = "talkdown-discard-confirm";
+const EXTERNAL_CHANGE_MODAL_ID: &str = "talkdown-external-change-modal";
+const EXTERNAL_CHANGE_KEEP_ID: &str = "talkdown-external-change-keep";
+const EXTERNAL_CHANGE_RELOAD_ID: &str = "talkdown-external-change-reload";
 const WINDOW_SIZE: (f32, f32) = (1_180.0, 780.0);
 const MIN_WINDOW_SIZE: (f32, f32) = (940.0, 640.0);
 const DEFAULT_TEXT_SCALE_PERCENT: u16 = model::DEFAULT_TEXT_SCALE_PERCENT;
@@ -566,6 +570,18 @@ enum Message {
     SaveFile,
     SaveFileAs,
     FileSaved(Result<SavedFile, FileError>),
+    SpeechWorkerEvent(u64, SpeechEvent),
+    CodexWorkerEvent(u64, CodexEvent),
+    ModelDownloadEvent(u64, DownloadEvent),
+    FileWatchEvent(FileWatchEvent),
+    ExternalFileChecked {
+        path: PathBuf,
+        buffer_generation: u64,
+        monitor_generation: u64,
+        observation: FileObservation,
+    },
+    KeepExternalEdits,
+    ReloadExternalFile,
     WindowCloseRequested(window::Id),
     ConfirmDiscard,
     CancelDiscard,
@@ -595,7 +611,6 @@ enum Message {
     DismissNotice,
     RefreshNormalCursor,
     WindowFocusChanged(bool),
-    Tick,
 }
 
 #[derive(Debug, Clone)]
@@ -623,6 +638,19 @@ enum DiscardAction {
     CloseWindow(window::Id),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileObservation {
+    Present(String),
+    Missing,
+    Unreadable(io::ErrorKind),
+}
+
+#[derive(Debug, Clone)]
+struct ExternalFileChange {
+    path: PathBuf,
+    contents: String,
+}
+
 impl DiscardAction {
     fn verb(self) -> &'static str {
         match self {
@@ -645,6 +673,12 @@ struct App {
     file: Option<PathBuf>,
     document: Document,
     buffer_generation: u64,
+    file_observation: Option<FileObservation>,
+    file_monitor_generation: u64,
+    file_check_pending: bool,
+    file_change_queued: bool,
+    external_file_change: Option<ExternalFileChange>,
+    file_watcher: FileWatcher,
     mode: Mode,
     syntax_theme: highlighter::Theme,
     word_wrap: bool,
@@ -691,6 +725,7 @@ struct App {
 impl App {
     fn new() -> (Self, Task<Message>) {
         let mut file = None;
+        let mut file_observation = None;
         let mut document = Document::new();
         let mut notice = Notice::new(
             NoticeSource::Editor,
@@ -705,9 +740,11 @@ impl App {
                 Ok(contents) => {
                     document = Document::with_text(&contents);
                     file = Some(path);
+                    file_observation = Some(FileObservation::Present(contents));
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     file = Some(path);
+                    file_observation = Some(FileObservation::Missing);
                     notice = Notice::new(
                         NoticeSource::File,
                         UiState::Warning,
@@ -735,6 +772,8 @@ impl App {
         let speech = SpeechBridge::start_with_model(initial_model.path.clone());
         let codex = CodexBridge::start_with_model(preferences.codex_model.clone());
         let mut app = Self::from_parts(file, document, notice, speech, codex);
+        app.file_observation = file_observation;
+        app.file_watcher.watch_file(app.file.as_deref());
         app.speech_model_path = initial_model.path;
         app.speech_model_source = initial_model.source;
         app.restore_preferences(preferences);
@@ -754,6 +793,15 @@ impl App {
             file,
             document,
             buffer_generation: 1,
+            file_observation: None,
+            file_monitor_generation: 1,
+            file_check_pending: false,
+            file_change_queued: false,
+            external_file_change: None,
+            #[cfg(not(test))]
+            file_watcher: FileWatcher::start(),
+            #[cfg(test)]
+            file_watcher: FileWatcher::intercepted(),
             mode: Mode::Normal,
             syntax_theme: highlighter::Theme::Base16Ocean,
             word_wrap: true,
@@ -807,8 +855,16 @@ impl App {
             .and_then(Path::file_name)
             .and_then(ffi::OsStr::to_str)
             .unwrap_or("Untitled");
-        let dirty = if self.document.is_dirty() { " •" } else { "" };
+        let dirty = if self.has_unsaved_changes() {
+            " •"
+        } else {
+            ""
+        };
         format!("Talkdown — {name}{dirty}")
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        self.document.is_dirty() || matches!(self.file_observation, Some(FileObservation::Missing))
     }
 
     fn theme(&self) -> Theme {
@@ -936,14 +992,32 @@ impl App {
             && self.window_focused
             && self.settings.is_none()
             && self.discard_action.is_none()
+            && self.external_file_change.is_none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
-            time::every(Duration::from_millis(33)).map(|_| Message::Tick),
+        let mut subscriptions = vec![
             time::every(Duration::from_millis(250)).map(|_| Message::RefreshNormalCursor),
             event::listen_with(global_event),
-        ])
+            self.speech
+                .subscription()
+                .map(|(id, event)| Message::SpeechWorkerEvent(id, event)),
+            self.codex
+                .subscription()
+                .map(|(id, event)| Message::CodexWorkerEvent(id, event)),
+            self.file_watcher
+                .subscription()
+                .map(Message::FileWatchEvent),
+        ];
+        if let Some(download) = self.model_download.as_ref() {
+            subscriptions.push(
+                download
+                    .worker
+                    .subscription()
+                    .map(|(id, event)| Message::ModelDownloadEvent(id, event)),
+            );
+        }
+        Subscription::batch(subscriptions)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -955,7 +1029,11 @@ impl App {
                     | Message::GlobalEscape
                     | Message::RefreshNormalCursor
                     | Message::WindowFocusChanged(_)
-                    | Message::Tick
+                    | Message::SpeechWorkerEvent(_, _)
+                    | Message::CodexWorkerEvent(_, _)
+                    | Message::ModelDownloadEvent(_, _)
+                    | Message::FileWatchEvent(_)
+                    | Message::ExternalFileChecked { .. }
             )
         {
             return Task::none();
@@ -980,7 +1058,31 @@ impl App {
                     | Message::GlobalEscape
                     | Message::RefreshNormalCursor
                     | Message::WindowFocusChanged(_)
-                    | Message::Tick
+                    | Message::SpeechWorkerEvent(_, _)
+                    | Message::CodexWorkerEvent(_, _)
+                    | Message::ModelDownloadEvent(_, _)
+                    | Message::FileWatchEvent(_)
+                    | Message::ExternalFileChecked { .. }
+            )
+        {
+            return Task::none();
+        }
+
+        if self.external_file_change.is_some()
+            && self.discard_action.is_none()
+            && self.settings.is_none()
+            && !matches!(
+                &message,
+                Message::KeepExternalEdits
+                    | Message::ReloadExternalFile
+                    | Message::GlobalEscape
+                    | Message::RefreshNormalCursor
+                    | Message::WindowFocusChanged(_)
+                    | Message::SpeechWorkerEvent(_, _)
+                    | Message::CodexWorkerEvent(_, _)
+                    | Message::ModelDownloadEvent(_, _)
+                    | Message::FileWatchEvent(_)
+                    | Message::ExternalFileChecked { .. }
             )
         {
             return Task::none();
@@ -1084,6 +1186,7 @@ impl App {
                     Ok((path, contents)) => {
                         self.file = Some(path);
                         self.replace_document(&contents);
+                        self.set_file_observation(Some(FileObservation::Present(contents)));
                         self.mode = Mode::Normal;
                         self.set_notice(Notice::new(
                             NoticeSource::File,
@@ -1125,7 +1228,8 @@ impl App {
                     }
                     Ok(saved) => {
                         self.file = Some(saved.path);
-                        self.document.mark_saved_text(saved.text);
+                        self.document.mark_saved_text(saved.text.clone());
+                        self.set_file_observation(Some(FileObservation::Present(saved.text)));
                         if self.document.revision() == saved.revision {
                             self.set_notice(Notice::new(
                                 NoticeSource::File,
@@ -1161,11 +1265,46 @@ impl App {
                         .recovery("The editor buffer still contains your edits, but they are not on disk. Check permissions or use Save As."),
                     ),
                 }
-                Task::none()
+                self.check_queued_file_change()
             }
+            Message::ExternalFileChecked {
+                path,
+                buffer_generation,
+                monitor_generation,
+                observation,
+            } => {
+                self.file_check_pending = false;
+                if self.file.as_ref() != Some(&path)
+                    || self.buffer_generation != buffer_generation
+                    || self.file_monitor_generation != monitor_generation
+                {
+                    return self.check_queued_file_change();
+                }
+                let observation_task = self.handle_file_observation(path, observation);
+                Task::batch([observation_task, self.check_queued_file_change()])
+            }
+            Message::KeepExternalEdits => {
+                if self.external_file_change.take().is_some() {
+                    self.set_notice(
+                        Notice::new(
+                            NoticeSource::File,
+                            UiState::Warning,
+                            "Disk changes were not loaded",
+                            "The unsaved editor buffer remains intact and differs from the current file on disk.",
+                        )
+                        .recovery(
+                            "Use Save As to preserve both versions, or reopen the file to load the disk version.",
+                        ),
+                    );
+                    Task::batch([operation::focus(EDITOR_ID), self.check_queued_file_change()])
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ReloadExternalFile => self.reload_external_file(),
             Message::WindowCloseRequested(window) => {
                 self.settings = None;
-                if self.document.is_dirty() {
+                if self.has_unsaved_changes() {
                     self.discard_action = Some(DiscardAction::CloseWindow(window));
                     Task::none()
                 } else {
@@ -1488,10 +1627,27 @@ impl App {
                 self.window_focused = is_focused;
                 Task::none()
             }
-            Message::Tick => {
-                self.drain_workers();
+            Message::SpeechWorkerEvent(id, event) if id == self.speech.subscription_id() => {
+                self.handle_speech(event);
                 Task::none()
             }
+            Message::SpeechWorkerEvent(_, _) => Task::none(),
+            Message::CodexWorkerEvent(id, event) if id == self.codex.subscription_id() => {
+                self.handle_codex(event);
+                Task::none()
+            }
+            Message::CodexWorkerEvent(_, _) => Task::none(),
+            Message::ModelDownloadEvent(id, event)
+                if self
+                    .model_download
+                    .as_ref()
+                    .is_some_and(|download| download.worker.subscription_id() == id) =>
+            {
+                self.handle_model_download_event(event);
+                Task::none()
+            }
+            Message::ModelDownloadEvent(_, _) => Task::none(),
+            Message::FileWatchEvent(event) => self.handle_file_watch_event(event),
         }
     }
 
@@ -1530,7 +1686,7 @@ impl App {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "Not saved to disk".into());
         let location = compact_copy(&location, 54);
-        let dirty = self.document.is_dirty();
+        let dirty = self.has_unsaved_changes();
         let file_state_color = if dirty { ui::WARNING } else { ui::SUCCESS };
 
         let mode_indicator = contextual_tooltip(
@@ -2003,6 +2159,8 @@ impl App {
                 settings_modal(settings.clone(), model_view, self.codex_models.clone()),
             ])
             .into()
+        } else if self.external_file_change.is_some() {
+            stack([workspace, external_file_change_modal(document_name)]).into()
         } else {
             workspace
         }
@@ -2108,6 +2266,21 @@ impl App {
         }
 
         if self.settings.take().is_some() {
+            return operation::focus(EDITOR_ID);
+        }
+
+        if self.external_file_change.take().is_some() {
+            self.set_notice(
+                Notice::new(
+                    NoticeSource::File,
+                    UiState::Warning,
+                    "Disk changes were not loaded",
+                    "The unsaved editor buffer remains intact and differs from the current file on disk.",
+                )
+                .recovery(
+                    "Use Save As to preserve both versions, or reopen the file to load the disk version.",
+                ),
+            );
             return operation::focus(EDITOR_ID);
         }
 
@@ -2257,6 +2430,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     fn drain_workers(&mut self) {
         self.drain_model_download();
 
@@ -2271,6 +2445,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     fn drain_model_download(&mut self) {
         let events: Vec<_> = self
             .model_download
@@ -2279,34 +2454,38 @@ impl App {
             .unwrap_or_default();
 
         for event in events {
-            match event {
-                DownloadEvent::Progress { downloaded, total } => {
-                    if let Some(download) = self.model_download.as_mut() {
-                        download.downloaded = downloaded.min(total);
-                        download.total = total;
-                    }
+            self.handle_model_download_event(event);
+        }
+    }
+
+    fn handle_model_download_event(&mut self, event: DownloadEvent) {
+        match event {
+            DownloadEvent::Progress { downloaded, total } => {
+                if let Some(download) = self.model_download.as_mut() {
+                    download.downloaded = downloaded.min(total);
+                    download.total = total;
                 }
-                DownloadEvent::Finished(result) => {
-                    self.model_download = None;
-                    match result {
-                        Ok(path) => {
-                            self.model_download_error = None;
-                            if let Some(settings) = self.settings.as_mut() {
-                                settings.speech_model_path = Some(path);
-                            } else {
-                                self.set_notice(Notice::new(
-                                    NoticeSource::Speech,
-                                    UiState::Success,
-                                    "Default model downloaded",
-                                    "The verified model is installed but the active speech service was not changed.",
-                                ).recovery("Open Settings, select the default model, and apply the change."));
-                            }
+            }
+            DownloadEvent::Finished(result) => {
+                self.model_download = None;
+                match result {
+                    Ok(path) => {
+                        self.model_download_error = None;
+                        if let Some(settings) = self.settings.as_mut() {
+                            settings.speech_model_path = Some(path);
+                        } else {
+                            self.set_notice(Notice::new(
+                                NoticeSource::Speech,
+                                UiState::Success,
+                                "Default model downloaded",
+                                "The verified model is installed but the active speech service was not changed.",
+                            ).recovery("Open Settings, select the default model, and apply the change."));
                         }
-                        Err(DownloadError::Cancelled) => {
-                            self.model_download_error = None;
-                        }
-                        Err(DownloadError::Failed(error)) => self.model_download_failed(error),
                     }
+                    Err(DownloadError::Cancelled) => {
+                        self.model_download_error = None;
+                    }
+                    Err(DownloadError::Failed(error)) => self.model_download_failed(error),
                 }
             }
         }
@@ -3181,7 +3360,7 @@ impl App {
     }
 
     fn request_new_file(&mut self) -> Task<Message> {
-        if self.document.is_dirty() {
+        if self.has_unsaved_changes() {
             self.discard_action = Some(DiscardAction::NewFile);
             Task::none()
         } else {
@@ -3192,6 +3371,7 @@ impl App {
     fn new_file(&mut self) -> Task<Message> {
         self.file = None;
         self.replace_document("");
+        self.set_file_observation(None);
         self.mode = Mode::Normal;
         self.set_notice(Notice::new(
             NoticeSource::File,
@@ -3224,7 +3404,7 @@ impl App {
             ));
             return Task::none();
         }
-        if self.document.is_dirty() {
+        if self.has_unsaved_changes() {
             self.discard_action = Some(DiscardAction::OpenFile);
             return Task::none();
         }
@@ -3236,6 +3416,7 @@ impl App {
         debug_assert!(!self.file_busy);
 
         self.file_busy = true;
+        self.invalidate_file_checks();
         self.set_notice(Notice::new(
             NoticeSource::File,
             UiState::Working,
@@ -3265,6 +3446,7 @@ impl App {
             return Task::none();
         }
         self.file_busy = true;
+        self.invalidate_file_checks();
         let text = self.document.text();
         let revision = self.document.revision();
         let buffer_generation = self.buffer_generation;
@@ -3305,6 +3487,203 @@ impl App {
                 .then(Task::future)
                 .map(Message::FileSaved)
         }
+    }
+
+    fn check_external_file(&mut self) -> Task<Message> {
+        if self.file_busy
+            || self.file_check_pending
+            || self.external_file_change.is_some()
+            || self.file_observation.is_none()
+        {
+            return Task::none();
+        }
+
+        let Some(path) = self.file.clone() else {
+            return Task::none();
+        };
+        self.file_check_pending = true;
+        let buffer_generation = self.buffer_generation;
+        let monitor_generation = self.file_monitor_generation;
+        Task::perform(observe_file(path.clone()), move |observation| {
+            Message::ExternalFileChecked {
+                path,
+                buffer_generation,
+                monitor_generation,
+                observation,
+            }
+        })
+    }
+
+    fn handle_file_watch_event(&mut self, event: FileWatchEvent) -> Task<Message> {
+        match event {
+            FileWatchEvent::Changed
+                if self.file_busy
+                    || self.file_check_pending
+                    || self.external_file_change.is_some() =>
+            {
+                self.file_change_queued = true;
+                Task::none()
+            }
+            FileWatchEvent::Changed => self.check_external_file(),
+            FileWatchEvent::Failed if self.file.is_none() => Task::none(),
+            FileWatchEvent::Failed => {
+                self.set_notice(
+                    Notice::new(
+                        NoticeSource::File,
+                        UiState::Warning,
+                        "Automatic file reload is unavailable",
+                        "The editor buffer is unchanged, but Talkdown could not monitor this file for disk changes.",
+                    )
+                    .recovery("Reopen the file to retry the operating-system file watcher."),
+                );
+                Task::none()
+            }
+        }
+    }
+
+    fn check_queued_file_change(&mut self) -> Task<Message> {
+        if self.file_change_queued
+            && !self.file_busy
+            && !self.file_check_pending
+            && self.external_file_change.is_none()
+        {
+            self.file_change_queued = false;
+            self.check_external_file()
+        } else {
+            Task::none()
+        }
+    }
+
+    #[cfg(test)]
+    fn drain_file_watcher(&mut self) -> Task<Message> {
+        let events: Vec<_> = self.file_watcher.try_events().collect();
+        let mut tasks = Vec::with_capacity(events.len());
+        for event in events {
+            tasks.push(self.handle_file_watch_event(event));
+        }
+        Task::batch(tasks)
+    }
+
+    fn handle_file_observation(
+        &mut self,
+        path: PathBuf,
+        observation: FileObservation,
+    ) -> Task<Message> {
+        if self.file_observation.as_ref() == Some(&observation) {
+            return Task::none();
+        }
+
+        let had_unsaved_changes = self.has_unsaved_changes();
+        let previous = self.file_observation.replace(observation.clone());
+        self.file_monitor_generation = self.file_monitor_generation.wrapping_add(1);
+
+        match observation {
+            FileObservation::Present(contents) if contents == self.document.text() => {
+                self.document.mark_saved_text(contents);
+                self.external_file_change = None;
+                if matches!(
+                    previous,
+                    Some(FileObservation::Missing | FileObservation::Unreadable(_))
+                ) {
+                    self.set_notice(Notice::new(
+                        NoticeSource::File,
+                        UiState::Success,
+                        "File is available again",
+                        "The file on disk matches the current editor buffer.",
+                    ));
+                }
+                Task::none()
+            }
+            FileObservation::Present(contents) if had_unsaved_changes => {
+                self.document.mark_saved_text(contents.clone());
+                self.external_file_change = Some(ExternalFileChange { path, contents });
+                self.set_notice(
+                    Notice::new(
+                        NoticeSource::File,
+                        UiState::Warning,
+                        "File changed on disk",
+                        "The editor has unsaved changes, so the disk version was not loaded automatically.",
+                    )
+                    .recovery(
+                        "Choose Reload from disk to discard the editor changes, or keep editing to preserve them.",
+                    ),
+                );
+                Task::none()
+            }
+            FileObservation::Present(contents) => {
+                self.replace_document(&contents);
+                self.mode = Mode::Normal;
+                self.set_notice(Notice::new(
+                    NoticeSource::File,
+                    UiState::Success,
+                    "Reloaded from disk",
+                    "The file changed outside Talkdown, so the clean editor buffer was refreshed.",
+                ));
+                operation::focus(EDITOR_ID)
+            }
+            FileObservation::Missing => {
+                self.set_notice(
+                    Notice::new(
+                        NoticeSource::File,
+                        UiState::Warning,
+                        "File was removed from disk",
+                        "The editor buffer remains open and unchanged; no text was discarded.",
+                    )
+                    .recovery("Use Save to recreate the file, or Save As to choose a new path."),
+                );
+                Task::none()
+            }
+            FileObservation::Unreadable(kind) => {
+                self.set_notice(
+                    Notice::new(
+                        NoticeSource::File,
+                        UiState::Error,
+                        "Couldn’t check the file on disk",
+                        format!(
+                            "The editor buffer remains open and unchanged. The file check failed with: {kind}."
+                        ),
+                    )
+                    .recovery("Check the file permissions; Talkdown will keep checking for recovery."),
+                );
+                Task::none()
+            }
+        }
+    }
+
+    fn reload_external_file(&mut self) -> Task<Message> {
+        let Some(change) = self.external_file_change.take() else {
+            return Task::none();
+        };
+
+        if self.file.as_ref() != Some(&change.path) {
+            return Task::none();
+        }
+
+        self.replace_document(&change.contents);
+        self.mode = Mode::Normal;
+        self.set_notice(Notice::new(
+            NoticeSource::File,
+            UiState::Success,
+            "Reloaded from disk",
+            "The external file version replaced the unsaved editor buffer as requested.",
+        ));
+        Task::batch([operation::focus(EDITOR_ID), self.check_queued_file_change()])
+    }
+
+    fn invalidate_file_checks(&mut self) {
+        self.file_monitor_generation = self.file_monitor_generation.wrapping_add(1);
+        self.file_change_queued = false;
+        self.external_file_change = None;
+    }
+
+    fn set_file_observation(&mut self, observation: Option<FileObservation>) {
+        self.file_monitor_generation = self.file_monitor_generation.wrapping_add(1);
+        self.external_file_change = None;
+        if observation.is_none() {
+            self.file_change_queued = false;
+        }
+        self.file_observation = observation;
+        self.file_watcher.watch_file(self.file.as_deref());
     }
 
     fn allocate_id(&mut self) -> u64 {
@@ -3733,6 +4112,84 @@ fn settings_scale_controls(control: SettingsScaleControl) -> Element<'static, Me
     .spacing(6)
     .align_x(Right)
     .into()
+}
+
+fn external_file_change_modal(document_name: String) -> Element<'static, Message> {
+    let keep = container(
+        button(fixed_button_label("Keep editing", UI_FONT, BODY_SIZE))
+            .width(124)
+            .height(36)
+            .padding([7, 14])
+            .style(ui::quiet_button)
+            .on_press(Message::KeepExternalEdits),
+    )
+    .id(EXTERNAL_CHANGE_KEEP_ID);
+    let reload = container(
+        button(fixed_button_label("Reload from disk", UI_FONT, BODY_SIZE))
+            .width(154)
+            .height(36)
+            .padding([7, 14])
+            .style(ui::danger_button)
+            .on_press(Message::ReloadExternalFile),
+    )
+    .id(EXTERNAL_CHANGE_RELOAD_ID);
+
+    let modal = container(
+        column![
+            row![
+                column![
+                    text("File changed on disk")
+                        .font(UI_BOLD_FONT)
+                        .size(LEAD_SIZE)
+                        .color(ui::TEXT),
+                    text(document_name)
+                        .font(UI_FONT)
+                        .size(BODY_SIZE)
+                        .color(ui::SUBTLE),
+                ]
+                .spacing(2)
+                .width(Fill),
+                container(
+                    text("CONFLICT")
+                        .font(EDITOR_FONT)
+                        .size(CAPTION_SIZE)
+                        .color(ui::WARNING),
+                )
+                .padding([5, 8])
+                .style(|_| ui::status_pill(ui::WARNING)),
+            ]
+            .align_y(Center),
+            container(space()).width(Fill).height(1).style(ui::rule),
+            text("Talkdown found a different disk version while the editor has unsaved changes. Your editor text has not been changed.")
+                .font(UI_FONT)
+                .size(BODY_SIZE)
+                .line_height(1.35)
+                .color(ui::SECONDARY),
+            text("Reloading discards the unsaved editor changes and cannot be undone.")
+                .font(UI_FONT)
+                .size(BODY_SIZE)
+                .line_height(1.35)
+                .color(ui::DANGER),
+            row![space().width(Fill), keep, reload]
+                .spacing(8)
+                .align_y(Center),
+        ]
+        .spacing(14),
+    )
+    .id(EXTERNAL_CHANGE_MODAL_ID)
+    .width(560)
+    .padding(20)
+    .style(ui::modal_card);
+
+    opaque(
+        container(modal)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Center)
+            .align_y(Center)
+            .padding(24)
+            .style(ui::modal_backdrop),
+    )
 }
 
 fn discard_changes_modal(
@@ -4644,6 +5101,14 @@ fn pick_file(
     }
 }
 
+async fn observe_file(path: PathBuf) -> FileObservation {
+    match tokio::fs::read_to_string(path).await {
+        Ok(contents) => FileObservation::Present(contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => FileObservation::Missing,
+        Err(error) => FileObservation::Unreadable(error.kind()),
+    }
+}
+
 async fn save_to(
     path: PathBuf,
     text: String,
@@ -5363,6 +5828,125 @@ mod tests {
         assert!(!app.file_busy);
         assert_eq!(app.document.text(), "new unsaved text");
         assert!(app.document.is_dirty());
+    }
+
+    #[test]
+    fn clean_file_reloads_when_disk_contents_change() {
+        let (mut app, _speech, _codex) = test_app("Saved text");
+        let path = PathBuf::from("watched-notes.txt");
+        app.file = Some(path.clone());
+        app.file_observation = Some(FileObservation::Present("Saved text".into()));
+        app.mode = Mode::Insert;
+        let previous_generation = app.buffer_generation;
+        app.file_watcher.trigger_change();
+        let _ = app.drain_file_watcher();
+        assert!(app.file_check_pending);
+
+        let monitor_generation = app.file_monitor_generation;
+        let _ = app.update(Message::ExternalFileChecked {
+            path,
+            buffer_generation: previous_generation,
+            monitor_generation,
+            observation: FileObservation::Present("Changed elsewhere".into()),
+        });
+
+        assert_eq!(app.document.text(), "Changed elsewhere");
+        assert!(!app.document.is_dirty());
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.buffer_generation, previous_generation + 1);
+        assert!(app.external_file_change.is_none());
+        assert!(!app.file_check_pending);
+        assert_eq!(app.notice.source, NoticeSource::File);
+        assert_eq!(app.notice.state, UiState::Success);
+        assert_eq!(app.notice.title, "Reloaded from disk");
+
+        let current_text = app.document.text();
+        let _ = app.update(Message::ExternalFileChecked {
+            path: PathBuf::from("watched-notes.txt"),
+            buffer_generation: previous_generation,
+            monitor_generation,
+            observation: FileObservation::Present("Stale result".into()),
+        });
+        assert_eq!(app.document.text(), current_text);
+
+        let _ = app.update(Message::ExternalFileChecked {
+            path: PathBuf::from("watched-notes.txt"),
+            buffer_generation: app.buffer_generation,
+            monitor_generation: app.file_monitor_generation,
+            observation: FileObservation::Missing,
+        });
+        assert_eq!(app.document.text(), current_text);
+        assert!(app.has_unsaved_changes());
+        assert_eq!(app.notice.state, UiState::Warning);
+        assert_eq!(app.notice.title, "File was removed from disk");
+    }
+
+    #[test]
+    fn dirty_file_change_warns_and_offers_keep_or_reload() -> Result<(), Error> {
+        let (mut app, _speech, _codex) = test_app("Saved text");
+        let path = PathBuf::from("watched-notes.txt");
+        app.file = Some(path.clone());
+        app.file_observation = Some(FileObservation::Present("Saved text".into()));
+        app.document
+            .insert(" plus local edits")
+            .expect("dirty watched-file fixture");
+        let local_text = app.document.text();
+
+        let monitor_generation = app.file_monitor_generation;
+        let _ = app.update(Message::ExternalFileChecked {
+            path: path.clone(),
+            buffer_generation: app.buffer_generation,
+            monitor_generation,
+            observation: FileObservation::Present("First disk change".into()),
+        });
+
+        assert_eq!(app.document.text(), local_text);
+        assert!(app.document.is_dirty());
+        assert!(app.external_file_change.is_some());
+        assert_eq!(app.notice.state, UiState::Warning);
+        assert_eq!(app.notice.title, "File changed on disk");
+
+        let keep_messages = {
+            let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+            ui.find(id(EXTERNAL_CHANGE_MODAL_ID))?;
+            ui.click(id(EXTERNAL_CHANGE_KEEP_ID))?;
+            ui.into_messages().collect::<Vec<_>>()
+        };
+        for message in keep_messages {
+            let _ = app.update(message);
+        }
+        assert_eq!(app.document.text(), local_text);
+        assert!(app.document.is_dirty());
+        assert!(app.external_file_change.is_none());
+        assert_eq!(app.notice.title, "Disk changes were not loaded");
+
+        let monitor_generation = app.file_monitor_generation;
+        let _ = app.update(Message::ExternalFileChecked {
+            path,
+            buffer_generation: app.buffer_generation,
+            monitor_generation,
+            observation: FileObservation::Present("Latest disk change".into()),
+        });
+        app.file_watcher.trigger_change();
+        let _ = app.drain_file_watcher();
+        assert!(app.file_change_queued);
+        let reload_messages = {
+            let mut ui = tiny_skia_simulator(&app, WINDOW_SIZE);
+            ui.click(id(EXTERNAL_CHANGE_RELOAD_ID))?;
+            ui.into_messages().collect::<Vec<_>>()
+        };
+        for message in reload_messages {
+            let _ = app.update(message);
+        }
+
+        assert_eq!(app.document.text(), "Latest disk change");
+        assert!(!app.document.is_dirty());
+        assert!(app.external_file_change.is_none());
+        assert!(app.file_check_pending);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.notice.state, UiState::Success);
+        assert_eq!(app.notice.title, "Reloaded from disk");
+        Ok(())
     }
 
     #[test]
@@ -6403,6 +6987,7 @@ mod tests {
     #[test]
     fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), Error> {
         let (mut app, _speech, _codex) = test_app("Safe text");
+        assert_eq!(app.subscription().units(), 5);
         let _ = app.update(Message::OpenSettings);
 
         let (download, driver) = DefaultModelDownload::intercepted();
@@ -6412,11 +6997,31 @@ mod tests {
             total: model::DEFAULT_MODEL_BYTES,
             cancelling: false,
         });
+        assert_eq!(app.subscription().units(), 6);
+        let active_download_id = app
+            .model_download
+            .as_ref()
+            .expect("active download")
+            .worker
+            .subscription_id();
+        let _ = app.update(Message::ModelDownloadEvent(
+            active_download_id.wrapping_add(1),
+            DownloadEvent::Progress {
+                downloaded: 1,
+                total: model::DEFAULT_MODEL_BYTES,
+            },
+        ));
+        assert_eq!(
+            app.model_download
+                .as_ref()
+                .map(|download| download.downloaded),
+            Some(0)
+        );
         driver.emit(DownloadEvent::Progress {
             downloaded: 74_000_000,
             total: model::DEFAULT_MODEL_BYTES,
         });
-        let _ = app.update(Message::Tick);
+        app.drain_model_download();
         assert_eq!(
             app.model_download
                 .as_ref()
@@ -6435,7 +7040,7 @@ mod tests {
         }
         assert!(driver.is_cancelled());
         driver.emit(DownloadEvent::Finished(Err(DownloadError::Cancelled)));
-        let _ = app.update(Message::Tick);
+        app.drain_model_download();
         assert!(app.model_download.is_none());
         assert!(app.model_download_error.is_none());
 
@@ -6448,7 +7053,7 @@ mod tests {
         });
         let installed = PathBuf::from("/app-data/models/ggml-base.en.bin");
         driver.emit(DownloadEvent::Finished(Ok(installed.clone())));
-        let _ = app.update(Message::Tick);
+        app.drain_model_download();
         assert_eq!(
             app.settings
                 .as_ref()
@@ -6467,7 +7072,7 @@ mod tests {
         driver.emit(DownloadEvent::Finished(Err(DownloadError::Failed(
             "storage is full".into(),
         ))));
-        let _ = app.update(Message::Tick);
+        app.drain_model_download();
         assert_eq!(app.model_download_error.as_deref(), Some("storage is full"));
         assert_eq!(app.notice.state, UiState::Error);
         assert_eq!(app.notice.source, NoticeSource::Speech);

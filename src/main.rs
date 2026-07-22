@@ -3,6 +3,8 @@ mod checker;
 mod codex;
 mod document;
 mod edit;
+mod event_stream;
+mod file_watch;
 mod model;
 mod speech;
 

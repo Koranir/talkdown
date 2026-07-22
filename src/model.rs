@@ -1,7 +1,8 @@
 use crate::checker::CheckingProvider;
+use crate::event_stream::{EventSender, EventStream, unbounded as event_channel};
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
 use directories::ProjectDirs;
+use iced::Subscription;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -58,12 +59,21 @@ pub enum DownloadError {
 }
 
 pub struct DefaultModelDownload {
-    events: Receiver<DownloadEvent>,
+    events: EventStream<DownloadEvent>,
     cancel: Arc<AtomicBool>,
 }
 
 impl DefaultModelDownload {
-    pub fn try_events(&self) -> crossbeam_channel::TryIter<'_, DownloadEvent> {
+    pub fn subscription(&self) -> Subscription<(u64, DownloadEvent)> {
+        self.events.tagged_subscription()
+    }
+
+    pub fn subscription_id(&self) -> u64 {
+        self.events.id()
+    }
+
+    #[cfg(test)]
+    pub fn try_events(&self) -> impl Iterator<Item = DownloadEvent> + '_ {
         self.events.try_iter()
     }
 
@@ -73,7 +83,7 @@ impl DefaultModelDownload {
 
     #[cfg(test)]
     pub(crate) fn intercepted() -> (Self, ModelDownloadTestDriver) {
-        let (events_tx, events) = unbounded();
+        let (events_tx, events) = event_channel();
         let cancel = Arc::new(AtomicBool::new(false));
         (
             Self {
@@ -90,7 +100,7 @@ impl DefaultModelDownload {
 
 #[cfg(test)]
 pub(crate) struct ModelDownloadTestDriver {
-    events: Sender<DownloadEvent>,
+    events: EventSender<DownloadEvent>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -194,7 +204,7 @@ fn save_preferences_at(settings_path: &Path, settings: &AppPreferences) -> Resul
 
 pub fn start_default_download() -> Result<DefaultModelDownload, String> {
     let destination = default_model_path()?;
-    let (events_tx, events) = unbounded();
+    let (events_tx, events) = event_channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let worker_destination = destination.clone();
@@ -254,7 +264,7 @@ fn load_preferences_at(path: &Path) -> Result<AppPreferences, String> {
 
 fn download_default_model(
     destination: &Path,
-    events: &Sender<DownloadEvent>,
+    events: &EventSender<DownloadEvent>,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, DownloadError> {
     if destination.is_file() && verify_model(destination).is_ok() {
@@ -282,7 +292,7 @@ fn download_default_model(
 
 fn download_to_temporary(
     temporary: &Path,
-    events: &Sender<DownloadEvent>,
+    events: &EventSender<DownloadEvent>,
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
     if cancel.load(Ordering::Acquire) {
@@ -325,7 +335,7 @@ fn copy_and_verify<R: Read, W: Write>(
     mut writer: W,
     expected_bytes: u64,
     expected_sha256: &str,
-    events: &Sender<DownloadEvent>,
+    events: &EventSender<DownloadEvent>,
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
     let mut digest = Sha256::new();
@@ -469,7 +479,7 @@ mod tests {
 
     #[test]
     fn cancelled_copy_stops_without_claiming_success() {
-        let (events, _received) = unbounded();
+        let (events, _received) = event_channel();
         let cancel = AtomicBool::new(true);
         let result = copy_and_verify(
             io::Cursor::new(vec![0; 32]),
@@ -484,7 +494,7 @@ mod tests {
 
     #[test]
     fn truncated_copy_reports_the_expected_size() {
-        let (events, _received) = unbounded();
+        let (events, _received) = event_channel();
         let cancel = AtomicBool::new(false);
         let result = copy_and_verify(
             io::Cursor::new(vec![0; 32]),
@@ -504,7 +514,7 @@ mod tests {
     fn complete_copy_verifies_checksum_and_reports_completion() {
         let bytes = b"deterministic model fixture";
         let expected = hex_digest(&Sha256::digest(bytes));
-        let (events, received) = unbounded();
+        let (events, received) = event_channel();
         let cancel = AtomicBool::new(false);
         let mut output = Vec::new();
         let result = copy_and_verify(

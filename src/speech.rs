@@ -1,12 +1,15 @@
+use crate::event_stream::{EventSender, EventStream, unbounded as event_channel};
+
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use iced::Subscription;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(not(feature = "local-whisper"), allow(dead_code))]
 pub enum SpeechEvent {
     Loading,
@@ -54,14 +57,14 @@ enum SpeechCommand {
 
 pub struct SpeechBridge {
     commands: Sender<SpeechCommand>,
-    events: Receiver<SpeechEvent>,
+    events: EventStream<SpeechEvent>,
     recording_id: Arc<AtomicU64>,
 }
 
 impl SpeechBridge {
     pub fn start_with_model(model_path: Option<PathBuf>) -> Self {
         let (command_tx, command_rx) = unbounded();
-        let (event_tx, event_rx) = unbounded();
+        let (event_tx, event_rx) = event_channel();
         let recording_id = Arc::new(AtomicU64::new(0));
         let worker_recording_id = Arc::clone(&recording_id);
 
@@ -108,14 +111,23 @@ impl SpeechBridge {
             .map_err(|_| anyhow!("speech worker stopped"))
     }
 
-    pub fn try_events(&self) -> crossbeam_channel::TryIter<'_, SpeechEvent> {
+    pub fn subscription(&self) -> Subscription<(u64, SpeechEvent)> {
+        self.events.tagged_subscription()
+    }
+
+    pub fn subscription_id(&self) -> u64 {
+        self.events.id()
+    }
+
+    #[cfg(test)]
+    pub fn try_events(&self) -> impl Iterator<Item = SpeechEvent> + '_ {
         self.events.try_iter()
     }
 
     #[cfg(test)]
     pub(crate) fn intercepted() -> (Self, SpeechTestDriver) {
         let (command_tx, command_rx) = unbounded();
-        let (event_tx, event_rx) = unbounded();
+        let (event_tx, event_rx) = event_channel();
         let recording_id = Arc::new(AtomicU64::new(0));
 
         (
@@ -135,7 +147,7 @@ impl SpeechBridge {
     pub(crate) fn start_with_pcm(samples: Vec<f32>, sample_rate: u32) -> Self {
         let model_path = crate::model::initial_model().path;
         let (command_tx, command_rx) = unbounded();
-        let (event_tx, event_rx) = unbounded();
+        let (event_tx, event_rx) = event_channel();
         let recording_id = Arc::new(AtomicU64::new(0));
         let worker_recording_id = Arc::clone(&recording_id);
 
@@ -163,7 +175,7 @@ impl SpeechBridge {
 #[cfg(test)]
 pub(crate) struct SpeechTestDriver {
     commands: Receiver<SpeechCommand>,
-    events: Sender<SpeechEvent>,
+    events: EventSender<SpeechEvent>,
 }
 
 #[cfg(test)]
@@ -207,7 +219,7 @@ impl Drop for SpeechBridge {
 #[cfg(feature = "local-whisper")]
 fn run_worker(
     commands: Receiver<SpeechCommand>,
-    events: Sender<SpeechEvent>,
+    events: EventSender<SpeechEvent>,
     recording_id: Arc<AtomicU64>,
     model_path: Option<PathBuf>,
 ) {
@@ -229,7 +241,7 @@ fn run_worker(
 #[cfg(all(test, feature = "local-whisper"))]
 fn run_worker_with_pcm(
     commands: Receiver<SpeechCommand>,
-    events: Sender<SpeechEvent>,
+    events: EventSender<SpeechEvent>,
     recording_id: Arc<AtomicU64>,
     samples: Vec<f32>,
     sample_rate: u32,
@@ -255,7 +267,7 @@ fn run_worker_with_pcm(
 #[cfg(not(feature = "local-whisper"))]
 fn run_worker(
     commands: Receiver<SpeechCommand>,
-    events: Sender<SpeechEvent>,
+    events: EventSender<SpeechEvent>,
     recording_id: Arc<AtomicU64>,
     _model_path: Option<PathBuf>,
 ) {
@@ -302,6 +314,9 @@ fn compact_error(error: &anyhow::Error) -> String {
 #[cfg(feature = "local-whisper")]
 mod whisper {
     use super::{SpeechCommand, SpeechEvent, compact_error};
+    use crate::event_stream::EventSender;
+    #[cfg(test)]
+    use crate::event_stream::unbounded as event_channel;
 
     use anyhow::{Context, Result, bail};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -368,7 +383,7 @@ mod whisper {
 
     pub(super) fn run(
         commands: Receiver<SpeechCommand>,
-        events: Sender<SpeechEvent>,
+        events: EventSender<SpeechEvent>,
         recording_id: Arc<AtomicU64>,
         model_path: Option<PathBuf>,
     ) -> Result<()> {
@@ -378,7 +393,7 @@ mod whisper {
     #[cfg(test)]
     pub(super) fn run_with_pcm(
         commands: Receiver<SpeechCommand>,
-        events: Sender<SpeechEvent>,
+        events: EventSender<SpeechEvent>,
         recording_id: Arc<AtomicU64>,
         samples: Vec<f32>,
         sample_rate: u32,
@@ -401,7 +416,7 @@ mod whisper {
 
     fn run_with_input(
         commands: Receiver<SpeechCommand>,
-        events: Sender<SpeechEvent>,
+        events: EventSender<SpeechEvent>,
         recording_id: Arc<AtomicU64>,
         injected: Option<InjectedPcm>,
         model_path: Option<PathBuf>,
@@ -707,7 +722,7 @@ mod whisper {
         recording: &mut Recording,
         samples: Vec<f32>,
         sample_rate: u32,
-        events: &Sender<SpeechEvent>,
+        events: &EventSender<SpeechEvent>,
     ) {
         if recording.last_level_at.elapsed() >= Duration::from_millis(50) && !samples.is_empty() {
             let energy = samples.iter().map(|sample| sample * sample).sum::<f32>();
@@ -731,7 +746,7 @@ mod whisper {
         active: &mut Option<Recording>,
         utterance_id: u64,
         sample_rate: u32,
-        events: &Sender<SpeechEvent>,
+        events: &EventSender<SpeechEvent>,
     ) -> Option<String> {
         while let Ok(message) = audio.try_recv() {
             match message {
@@ -775,7 +790,7 @@ mod whisper {
         recording: Recording,
         sample_rate: u32,
         jobs: &Sender<DecodeJob>,
-        events: &Sender<SpeechEvent>,
+        events: &EventSender<SpeechEvent>,
     ) {
         if recording.samples.len() < sample_rate as usize / 8 {
             let _ = events.send(SpeechEvent::Final {
@@ -976,7 +991,7 @@ mod whisper {
         #[test]
         fn queued_audio_cannot_cross_utterance_ids() {
             let (audio, receiver) = bounded(2);
-            let (events, _event_rx) = unbounded();
+            let (events, _event_rx) = event_channel();
             let mut active = Some(Recording {
                 id: 2,
                 hint: String::new(),

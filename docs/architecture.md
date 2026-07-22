@@ -41,6 +41,29 @@ saved text, and revision back to the UI; if newer edits occurred in the same
 buffer, the disk baseline updates without falsely marking it clean. A result
 from a prior generation can never rename, mark, or replace the current buffer.
 
+The platform-recommended `notify` backend watches the open file's parent
+directory non-recursively. Watching the directory keeps events flowing when an
+editor saves by atomically renaming a temporary file over the target. The
+callback only enqueues a bounded event; the iced loop then asynchronously reads
+and compares the complete target contents. Clean buffers reload changed text
+automatically and return to Normal mode. If the editor is dirty, the buffer is
+left untouched and an opaque conflict warning offers Keep editing or the
+danger-styled Reload from disk action. File observations carry both buffer and
+monitor generations; starting an Open or Save invalidates older observations.
+Missing or unreadable files produce sticky file notices and never become an
+empty replacement. Watcher setup or runtime failure is visible as a typed file
+warning and leaves the editor usable.
+
+Worker-to-UI delivery is event-driven. Speech, Codex, model-download, and file-
+watch bridges publish through async-waking channels whose stable IDs back iced
+subscriptions. A Settings-driven bridge replacement creates a new ID, causing
+iced to retire the old stream without confusing events from two workers. There
+is no fixed-rate application event pump: each result schedules `update`
+directly. High-frequency visual producers remain rate-limited deliberately—speech
+meter levels are emitted at no more than 20 Hz and download progress at no more
+than 5 Hz. The independent 250 ms subscription remains solely for pinned
+iced's guarded steady-caret workaround.
+
 New, Open, and native close requests route dirty documents through
 `discard_action: Option<DiscardAction>`. Its opaque modal blocks background
 editor commands and offers only Keep editing or an explicitly danger-styled
@@ -422,6 +445,9 @@ visible even when another subsystem owns that notice.
   current cursor.
 - Save completes after a newer edit: disk baseline is recorded, newer edit
   remains visibly dirty.
+- Open file changes on disk: a clean buffer reloads automatically; a dirty
+  buffer remains intact until the user explicitly chooses whether to keep it or
+  reload the observed disk version. Missing or unreadable files preserve text.
 - New, Open, or window close with unsaved edits: the document remains intact
   until the user explicitly confirms discard. A cancelled or failed Open keeps
   it intact even after confirmation.

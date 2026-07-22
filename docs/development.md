@@ -77,6 +77,23 @@ while the picker and read are pending, so cancellation or failure still loses
 no text. The application disables iced's automatic close handling and closes
 the native window only after this guard has run.
 
+While a named file is open, Talkdown uses `notify`'s recommended native backend
+to watch its parent directory without blocking the UI. This catches both direct
+writes and editors that save by atomically replacing the file. Each relevant
+event schedules a complete asynchronous content read. A changed file reloads
+automatically only when the editor is clean. Unsaved editor text instead opens
+an opaque conflict warning with Keep editing and Reload from disk choices;
+Escape keeps the editor version. Deletion, read, and watcher failures retain the
+buffer and show recovery guidance. In-flight reads are generation-guarded
+across Open and Save.
+
+Speech, Codex, model-download, and file-watch events each arrive through an
+iced subscription backed by an async-waking channel. The application has no
+fixed 30 FPS polling tick; worker output schedules UI updates immediately.
+Bridge replacements use a fresh stream identity, while intercepted tests drain
+the same receivers directly. The only periodic UI subscription is the guarded
+250 ms Normal-mode caret refresh described below.
+
 The toolbar Settings button and Ctrl/Cmd+comma open a staged modal for editor
 text, interface scale, visual word wrap, the dictation-checking provider, the
 Codex model, and the local transcription model.
@@ -227,8 +244,8 @@ does not capture an utterance.
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 85 tests: 72 run and thirteen are
-ignored. The no-default-feature build discovers 78: 68 run and ten are
+The default-feature build currently discovers 87 tests: 74 run and thirteen are
+ignored. The no-default-feature build discovers 80: 70 run and ten are
 ignored. The README lists all thirteen ignored tests.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a

@@ -1,8 +1,10 @@
 use crate::document::DocumentSnapshot;
 use crate::edit::{EditIntent, OUTPUT_SCHEMA, ProposedEdit};
+use crate::event_stream::{EventSender, EventStream, unbounded as event_channel};
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
+use iced::Subscription;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -48,7 +50,7 @@ pub struct CodexModel {
     pub is_default: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CodexEvent {
     Starting,
     Models(Vec<CodexModel>),
@@ -85,13 +87,13 @@ enum WorkerCommand {
 /// using the user's existing `codex login` session.
 pub struct CodexBridge {
     commands: Sender<WorkerCommand>,
-    events: Receiver<CodexEvent>,
+    events: EventStream<CodexEvent>,
 }
 
 impl CodexBridge {
     pub fn start_with_model(model: Option<String>) -> Self {
         let (command_tx, command_rx) = bounded(MAX_QUEUED_EDITS);
-        let (event_tx, event_rx) = unbounded();
+        let (event_tx, event_rx) = event_channel();
 
         let _ = thread::Builder::new()
             .name("talkdown-codex".into())
@@ -113,14 +115,23 @@ impl CodexBridge {
         }
     }
 
-    pub fn try_events(&self) -> crossbeam_channel::TryIter<'_, CodexEvent> {
+    pub fn subscription(&self) -> Subscription<(u64, CodexEvent)> {
+        self.events.tagged_subscription()
+    }
+
+    pub fn subscription_id(&self) -> u64 {
+        self.events.id()
+    }
+
+    #[cfg(test)]
+    pub fn try_events(&self) -> impl Iterator<Item = CodexEvent> + '_ {
         self.events.try_iter()
     }
 
     #[cfg(test)]
     pub(crate) fn intercepted() -> (Self, CodexTestDriver) {
         let (command_tx, command_rx) = bounded(MAX_QUEUED_EDITS);
-        let (event_tx, event_rx) = unbounded();
+        let (event_tx, event_rx) = event_channel();
 
         (
             Self {
@@ -138,7 +149,7 @@ impl CodexBridge {
 #[cfg(test)]
 pub(crate) struct CodexTestDriver {
     commands: Receiver<WorkerCommand>,
-    events: Sender<CodexEvent>,
+    events: EventSender<CodexEvent>,
 }
 
 #[cfg(test)]
@@ -180,7 +191,11 @@ impl Drop for CodexBridge {
     }
 }
 
-fn worker(commands: Receiver<WorkerCommand>, events: Sender<CodexEvent>, model: Option<String>) {
+fn worker(
+    commands: Receiver<WorkerCommand>,
+    events: EventSender<CodexEvent>,
+    model: Option<String>,
+) {
     let _ = events.send(CodexEvent::Starting);
     let mut session = connect(&events, model.as_deref()).ok();
 
@@ -226,7 +241,7 @@ fn worker(commands: Receiver<WorkerCommand>, events: Sender<CodexEvent>, model: 
     let _ = events.send(CodexEvent::Stopped);
 }
 
-fn connect(events: &Sender<CodexEvent>, model: Option<&str>) -> Result<Session> {
+fn connect(events: &EventSender<CodexEvent>, model: Option<&str>) -> Result<Session> {
     match Session::connect(model, Some(events)) {
         Ok(session) => {
             let _ = events.send(CodexEvent::Ready {
@@ -257,7 +272,10 @@ struct Session {
 }
 
 impl Session {
-    fn connect(selected_model: Option<&str>, events: Option<&Sender<CodexEvent>>) -> Result<Self> {
+    fn connect(
+        selected_model: Option<&str>,
+        events: Option<&EventSender<CodexEvent>>,
+    ) -> Result<Self> {
         let private_cwd = private_codex_cwd()?;
         let codex = std::env::var_os("TALKDOWN_CODEX_BIN").unwrap_or_else(|| "codex".into());
         let mut child = Command::new(codex)
@@ -453,7 +471,11 @@ impl Session {
         Ok(models)
     }
 
-    fn edit(&mut self, request: CodexRequest, events: &Sender<CodexEvent>) -> Result<ProposedEdit> {
+    fn edit(
+        &mut self,
+        request: CodexRequest,
+        events: &EventSender<CodexEvent>,
+    ) -> Result<ProposedEdit> {
         let prompt = build_prompt(&request)?;
         let schema: Value =
             serde_json::from_str(OUTPUT_SCHEMA).expect("static edit schema is valid");
@@ -847,7 +869,7 @@ mod tests {
     fn returns_a_schema_valid_fixed_span_edit() {
         let mut session =
             Session::connect(None, None).expect("subscription-backed app-server connection");
-        let (events, _ignored) = unbounded();
+        let (events, _ignored) = event_channel();
         let proposal = session
             .edit(
                 CodexRequest {
