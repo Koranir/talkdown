@@ -1,7 +1,11 @@
 > [!WARNING]
 > This repository was mostly AI generated.
 
-# Talkdown
+<div align="center">
+    <img src="assets/talkdown.svg" alt="Talkdown icon" height="128px"></img>
+
+    <h1>Talkdown</h1>
+</div>
 
 Talkdown is a modal, voice-first text editor built with `iced`. Normal mode is
 read-only: printable keys are commands, not text. Hold a key, speak, and the
