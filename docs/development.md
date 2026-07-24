@@ -37,6 +37,20 @@ destination. The installer accepts `--features whisper-cuda` or
 `--features whisper-vulkan`, and `--no-build` reuses
 `target/release/talkdown`.
 
+The CPU Whisper backend is enabled by default. On supported platforms and
+hardware, direct Cargo runs can select CUDA, Vulkan, or Apple Metal
+acceleration:
+
+```sh
+cargo run --release --features whisper-cuda -- path/to/file
+cargo run --release --features whisper-vulkan -- path/to/file
+cargo run --release --features whisper-metal -- path/to/file
+```
+
+The Linux desktop installer can pass the CUDA or Vulkan feature through with
+`./scripts/install.sh --features FEATURE`. Metal builds run directly through
+Cargo because the desktop installer is currently Linux-only.
+
 ## Local model
 
 Open Settings to download Talkdown’s English `base.en` default into the
@@ -281,10 +295,13 @@ Full checks:
 
 ```sh
 cargo fmt --check
-cargo test
+cargo nextest run --status-level fail --show-progress none
 cargo clippy --all-targets -- -D warnings
-cargo build --release
+cargo nextest run --status-level fail --show-progress none --no-default-features
+cargo check --no-default-features
 ```
+
+A release candidate should additionally pass `cargo build --release`.
 
 GUI smoke test with a desktop session:
 
@@ -292,16 +309,44 @@ GUI smoke test with a desktop session:
 timeout 8s cargo run --no-default-features -- /tmp/talkdown-smoke.txt
 ```
 
-External Codex and native-speech checks are listed in the README. The handshake
-starts an ephemeral thread but no model turn. The structured-edit check uses one
-turn. The speech check loads the configured model and opens the microphone but
-does not capture an utterance.
+## External Codex and native-speech checks
+
+The ignored Codex handshake requires an installed Codex CLI signed in through
+ChatGPT. It starts an ephemeral thread but does not use a model turn:
+
+```sh
+cargo test --no-default-features \
+  codex::tests::connects_through_chatgpt_subscription -- --ignored --exact
+```
+
+The structured-edit check exercises one live, schema-constrained Codex turn.
+Run it only when protocol behavior has changed:
+
+```sh
+cargo test --no-default-features \
+  codex::tests::returns_a_schema_valid_fixed_span_edit -- --ignored --exact
+```
+
+The native speech startup check loads the configured Whisper model and opens
+the host's default microphone. It does not record an utterance:
+
+```sh
+TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
+  cargo test speech::integration_tests::loads_model_and_opens_default_microphone \
+  -- --ignored --exact
+```
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 91 tests: 78 run and thirteen are
-ignored. The no-default-feature build discovers 84: 74 run and ten are
-ignored. The README lists all thirteen ignored tests.
+The default-feature build currently discovers 96 tests: 83 run normally and
+thirteen are ignored. The no-default-feature build discovers 89: 79 run
+normally and ten are ignored.
+
+The two Codex checks and native microphone check above, the injected-audio
+check below, eight snapshot tests, and the PipeWire check account for all
+thirteen ignored default-feature tests. Disabling default features removes the
+three checks that require local Whisper: native microphone, injected audio, and
+PipeWire.
 
 For a repeatable local transcription fixture, install `espeak-ng`, provide a
 real whisper.cpp model, and run:
