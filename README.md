@@ -107,6 +107,11 @@ an accelerated Whisper backend with `--features whisper-cuda` (or
 binary. The generated desktop entry contains the absolute binary path, so it
 does not depend on the graphical session inheriting the shell's `PATH`.
 
+Tagged GitHub releases provide an unsigned x86_64 Linux archive containing the
+default CPU Whisper build, desktop entry, and icon. Linux is currently the only
+automated binary release target; macOS and Windows packaging still needs
+platform testing.
+
 The CPU Whisper backend is enabled by default. Optional acceleration features:
 
 ```sh
