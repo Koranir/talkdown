@@ -303,6 +303,29 @@ cargo check --no-default-features
 
 A release candidate should additionally pass `cargo build --release`.
 
+## Publishing a release
+
+GitHub Actions uses Rust 1.97.1 to publish an unsigned
+`x86_64-unknown-linux-gnu` archive when a SemVer tag prefixed with `v` is
+pushed. The tag must exactly match the package version in `Cargo.toml`; for
+example, package version `0.1.0` must use tag `v0.1.0`. The archive contains the
+default CPU Whisper build, Linux desktop entry, and scalable icon, plus a
+separate SHA-256 checksum. Prerelease versions such as `v0.2.0-rc.1` are marked
+as prereleases automatically.
+
+Run the full checks above, update and commit both `Cargo.toml` and `Cargo.lock`,
+then create and push the tag:
+
+```sh
+git tag -a v0.1.0 -m "Talkdown v0.1.0"
+git push origin v0.1.0
+```
+
+The Release workflow can also be dispatched manually with an existing tag to
+retry a failed run. It never creates or moves a tag. macOS and Windows binaries,
+GPU-specific Whisper builds, signing, and native installers remain outside this
+workflow until those platform paths are tested and packaged.
+
 GUI smoke test with a desktop session:
 
 ```sh

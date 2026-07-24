@@ -118,6 +118,11 @@ want local dictation and ordinary editing.
 This builds Talkdown and installs the application, desktop entry, and icon
 under `~/.local`. You can then launch it from your desktop’s application menu.
 
+Tagged GitHub releases provide an unsigned x86_64 Linux archive containing the
+default CPU Whisper build, desktop entry, and icon. Linux is currently the only
+automated binary release target; macOS and Windows packaging still need
+platform testing.
+
 The CPU speech backend is enabled by default. If your system supports one of
 the accelerated Whisper backends, pass it to the installer:
 
