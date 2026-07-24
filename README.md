@@ -1,347 +1,263 @@
+<div align="center">
+  <img src="assets/talkdown.svg" alt="Talkdown icon" height="128">
+  <h1>Talkdown</h1>
+  <p><strong>A cursor-first text editor for writing and editing with your voice.</strong></p>
+</div>
+
+Talkdown treats speech like another input method. Put the cursor where you want
+to write, hold <kbd>Space</kbd>, speak, and release. Your words appear in the
+document at that exact spot.
+
+You can also select some text—or simply place the cursor nearby—then hold
+<kbd>c</kbd> and describe a change such as “make this more concise.” Talkdown
+asks Codex for a small, targeted edit and validates it locally before changing
+the document.
+
+<p align="center">
+  <img src="tests/snapshots/main-window-tiny-skia.png" alt="Talkdown editing a Markdown voice-notes file">
+</p>
+
 > [!WARNING]
-> This repository was mostly AI generated.
+> Talkdown is an early-stage experiment and was built mostly with AI assistance.
+> Expect rough edges, keep backups of important files, and see
+> [Current limitations](#current-limitations) before relying on it for daily
+> work.
 
-# Talkdown
+## What can Talkdown do?
 
-Talkdown is a modal, voice-first text editor built with `iced`. Normal mode is
-read-only: printable keys are commands, not text. Hold a key, speak, and the
-live local hypothesis updates in the voice panel. On release, the final raw
-transcript lands at the captured cursor as soon as local finalization completes;
-the default Harper checker then applies only conservative local grammar fixes.
-Contextual commands—and optional richer dictation refinement—use a
-subscription-authenticated Codex process behind the existing exact-target
-validator.
+- **Dictate wherever the cursor is.** Hold <kbd>Space</kbd> to insert speech at
+  the cursor or replace the current selection.
+- **Edit by voice.** Hold <kbd>c</kbd> and ask for a contextual change near the
+  cursor, such as rewriting a sentence or changing its tone.
+- **Transcribe locally.** Speech recognition runs on your computer with
+  Whisper, so ordinary dictation does not need a cloud speech service.
+- **Clean up conservatively.** The default Harper checker can fix a small set
+  of clear grammar issues and keeps a reviewable record of what it applied or
+  ignored.
+- **Work like a regular text editor.** Open and save files, type, paste, select,
+  undo, redo, wrap long lines, and use syntax highlighting.
+- **Keep typing separate from navigation.** Talkdown starts in a Vim-inspired
+  Normal mode where accidental key presses cannot insert text. Insert mode
+  behaves like a conventional editor.
+- **Recover from failures.** If transcription or a contextual edit fails, the
+  document is left alone and the latest usable transcript remains available
+  through **Insert last**.
+- **Adjust the workspace.** Settings cover text size, interface scale, word
+  wrap, speech and Codex models, grammar checking, and reducing other audio
+  while recording.
 
-This repository is an early but runnable vertical slice. It already provides:
+## Quick start
 
-- an `iced` editor pinned to the latest master revision researched on
-  2026-07-20;
-- Normal, Insert, and typed-command modes;
-- push-to-talk local Whisper transcription with a separate latest-wins partial
-  decoder, so microphone capture and release handling never wait on inference;
-- optimistic literal insertion, followed by a one-undo-step local Harper check
-  over the surrounding sentence, including transcript-seam spacing, with an
-  in-memory applied/ignored lint audit and Codex refinement available as a
-  setting;
-- cursor/selection-aware contextual commands;
-- a persistent `codex app-server` client that uses ChatGPT subscription auth;
-- exact-target validation, stale-response handling, and bounded context;
-- a custom charcoal-and-magenta `Talkdown Carbon` theme with explicit modal,
-  Speech, Codex, Checker, and text-safety states instead of ambiguous status
-  strings;
-- Atkinson Hyperlegible Next UI chrome with complementary Libertinus prose and
-  editor faces, a consistent three-size scale, 80–200% editor-text zoom, and
-  80–140% application scaling;
-- a staged Settings modal for appearance, dictation-checking provider, the
-  advertised Codex model, and the local transcription model, including a
-  verified default-model download;
-- open, save, save-as, syntax highlighting, wrapping, undo, redo, and explicit
-  discard confirmation for dirty New/Open/close actions.
+Talkdown is currently distributed as source code. The documented installation
+path is best tested on Linux; macOS and Windows packaging still need polish.
 
-## Prerequisites
+### 1. Install the build requirements
 
-- Rust 1.92 or newer.
-- A working native build toolchain. On Debian/Ubuntu, the usual starting point
-  is `build-essential cmake clang libclang-dev libasound2-dev pkg-config`.
-- The intended interface uses system-installed Atkinson Hyperlegible Next
-  Regular, Semibold, and Bold plus Libertinus Sans. Editor and status text use
-  the user's generic monospace family. Named fonts are not bundled yet;
-  Talkdown remains usable with host fallback fonts, but typography
-  and pixel snapshots may differ.
-- [Codex CLI](https://developers.openai.com/codex/cli/) signed in with ChatGPT:
+You need:
 
-  ```sh
-  codex login
-  codex login status
-  ```
+- Rust 1.92 or newer;
+- a C/C++ build toolchain, CMake, libclang, and native audio development files;
+- a working desktop session and microphone for dictation.
 
-- A local whisper.cpp GGML model. The model is intentionally not committed.
-  Settings can download the verified English `base.en` default into Talkdown’s
-  platform application-data directory, or choose an existing `.bin` model.
-  `small.en` can be more accurate on capable hardware. You can also download
-  models manually from the
-  [official whisper.cpp model repository](https://huggingface.co/ggerganov/whisper.cpp/tree/main),
-  place one under `models/`, and override the saved selection:
-
-  ```sh
-  export TALKDOWN_WHISPER_MODEL="$PWD/models/ggml-base.en.bin"
-  ```
-
-Talkdown never reads or copies `~/.codex/auth.json`. The child app-server owns
-login, refresh, storage, workspace policy, and subscription accounting.
-
-That is the current transport choice, not a claim that subscription-backed
-Codex can only be reached through a child process. Zed demonstrates a direct
-ChatGPT OAuth + Codex-backend integration for its built-in agent. Talkdown keeps
-app-server for the runnable slice because it is Codex's documented rich-client
-surface and already owns the changing authentication protocol. A direct
-subscription transport is now an explicit roadmap item; see the
-[dated backend research](docs/research/2026-07-20-chatgpt-codex-backend.md).
-
-## Run
-
-Open an existing file:
+On Debian or Ubuntu:
 
 ```sh
-cargo run --release -- path/to/notes.md
+sudo apt install build-essential cmake clang libclang-dev libasound2-dev pkg-config
 ```
 
-Start an untitled buffer:
+Install Rust through [rustup](https://rustup.rs/) if it is not already
+available.
+
+### 2. Build and run
+
+From the repository:
 
 ```sh
 cargo run --release
 ```
 
-### Linux desktop install
+To open a file immediately:
 
-Build a release binary and install a desktop launcher and scalable icon for the
-current user:
+```sh
+cargo run --release -- path/to/notes.md
+```
+
+The first release build can take a while because it compiles Whisper and the
+rest of the desktop application.
+
+### 3. Enable dictation
+
+Open **Settings** with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>,</kbd>, choose the
+default speech model, and select **Download**. Talkdown verifies the model
+before installing it. Apply the setting when the download finishes.
+
+You can instead choose an existing whisper.cpp GGML `.bin` model. The default
+is the English `base.en` model; larger English models such as `small.en` may be
+more accurate on capable hardware.
+
+### 4. Enable contextual commands
+
+Voice and typed contextual commands use the installed
+[Codex CLI](https://developers.openai.com/codex/cli/) with ChatGPT sign-in:
+
+```sh
+codex login
+codex login status
+```
+
+You need a ChatGPT account with access to Codex. Talkdown’s supported Codex
+path does not use an OpenAI Platform API key. This step is optional if you only
+want local dictation and ordinary editing.
+
+### Optional: install a Linux desktop launcher
 
 ```sh
 ./scripts/install.sh
 ```
 
-The default prefix is `~/.local`. Override it with `PREFIX` or `--prefix`, pass
-an accelerated Whisper backend with `--features whisper-cuda` (or
-`whisper-vulkan`), and use `--no-build` to reinstall an existing release
-binary. The generated desktop entry contains the absolute binary path, so it
-does not depend on the graphical session inheriting the shell's `PATH`.
+This builds Talkdown and installs the application, desktop entry, and icon
+under `~/.local`. You can then launch it from your desktop’s application menu.
 
 Tagged GitHub releases provide an unsigned x86_64 Linux archive containing the
 default CPU Whisper build, desktop entry, and icon. Linux is currently the only
-automated binary release target; macOS and Windows packaging still needs
+automated binary release target; macOS and Windows packaging still need
 platform testing.
 
-The CPU Whisper backend is enabled by default. Optional acceleration features:
+The CPU speech backend is enabled by default. If your system supports one of
+the accelerated Whisper backends, pass it to the installer:
 
 ```sh
-cargo run --release --features whisper-cuda -- path/to/file
-cargo run --release --features whisper-vulkan -- path/to/file
-cargo run --release --features whisper-metal -- path/to/file
+./scripts/install.sh --features whisper-vulkan
+./scripts/install.sh --features whisper-cuda
 ```
 
-Compile the editor without microphone/Whisper support when working only on UI
-or edit logic:
+## How to use Talkdown
 
-```sh
-cargo run --no-default-features
-```
+Talkdown opens in **Normal mode**. You can move the cursor and select text, but
+printable keys act as commands instead of changing the document.
 
-## Interaction
+### Dictate text
 
-Normal mode is the default.
+1. Move the cursor to the insertion point, or select text to replace.
+2. Hold <kbd>Space</kbd> and speak.
+3. Release <kbd>Space</kbd> to finish.
 
-| Input | Result |
+The live transcription appears in the voice panel. Once final transcription
+finishes, Talkdown inserts the raw words immediately and runs the selected
+checker. The complete dictation remains a single undo step.
+
+### Make a contextual edit
+
+1. Select the text you want to change, or place the cursor close to it.
+2. Hold <kbd>c</kbd>.
+3. Say something like “turn this into a heading” or “make this sentence
+   friendlier.”
+4. Release <kbd>c</kbd>.
+
+Talkdown gives Codex only a bounded portion of the document and asks for a
+specific target and replacement. It applies the result only if the target can
+still be found safely and unambiguously.
+
+No microphone? Press <kbd>:</kbd>, type the same kind of instruction, and press
+<kbd>Enter</kbd>.
+
+### Type normally
+
+Press <kbd>i</kbd> to enter **Insert mode** at the cursor. Press
+<kbd>Esc</kbd> when you want to return to Normal mode.
+
+## Essential controls
+
+| Input | What it does |
 | --- | --- |
-| Hold `Space` | Literal dictation at the cursor or over the selection |
-| Hold `c` | Contextual voice command near the cursor or selection |
-| `i` / `a` | Enter Insert mode before / after the cursor |
-| `o` / `O` | Open a line below / above and enter Insert mode |
-| `h j k l` | Move left, down, up, right |
-| `b` / `w` | Move by word |
-| `0` / `$` | Start / end of line |
-| `g` / `G` | Start / end of document |
-| `u` | Undo |
-| `x` | Delete selection or next character |
-| `Insert` | Enter Insert mode at the current cursor |
-| `Delete` | Delete the selection or next character, then enter Insert mode |
-| `Backspace` | Delete the selection or previous character, then enter Insert mode |
-| `+` / `=` | Increase editor text size by 10% |
-| `-` | Decrease editor text size by 10% |
-| `Ctrl/Cmd-+` / `Ctrl/Cmd-=` | Increase complete UI scale by 10% |
-| `Ctrl/Cmd--` | Decrease complete UI scale by 10% |
-| `:` | Type a command to exercise the voice-command pipeline without a mic |
-| `Ctrl/Cmd-,` | Open Settings |
-| `Esc` | Cancel Settings or speech, or return to Normal mode |
-| `Ctrl/Cmd-S` | Save |
-| `Ctrl/Cmd-Shift-S` | Save as |
-| `Ctrl/Cmd-O` | Open |
+| Hold <kbd>Space</kbd> | Dictate at the cursor or replace the selection |
+| Hold <kbd>c</kbd> | Give a contextual voice command |
+| <kbd>:</kbd> | Type a contextual command |
+| <kbd>i</kbd> / <kbd>a</kbd> | Enter Insert mode before / after the cursor |
+| <kbd>o</kbd> / <kbd>Shift</kbd>+<kbd>o</kbd> | Open a line below / above and start typing |
+| <kbd>Esc</kbd> | Cancel speech or return to Normal mode |
+| <kbd>u</kbd> | Undo |
+| <kbd>x</kbd> | Delete the selection or next character |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>S</kbd> | Save |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> | Save as |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>O</kbd> | Open a file |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>,</kbd> | Open Settings |
 
-Insert mode accepts ordinary text editor input, including IME and clipboard
-paste. `Esc` returns to Normal mode. The update layer rejects editing actions
-outside Insert mode even if they bypass key bindings. Plain `+`, `=`, and `-`
-zoom only the document editor text in Normal mode, in 10% steps from 80–200%; in
-Insert mode they remain ordinary document characters. Ctrl/Cmd with the same
-keys adjusts iced's complete application scale in 10% steps from 80–140%, even
-from Insert mode. Increasing the UI factor grows an already-open window when
-needed to preserve the 940 × 640 logical layout minimum. Zoom feedback is
-routine contextual state and does not open a banner.
+Arrow keys, Home, End, Page Up, Page Down, and Shift-selection work normally.
+Normal mode also supports:
 
-Pinned iced does not yet expose text-editor caret blink styling. While the
-application window is focused, Talkdown uses one atomic custom widget operation
-every 250 ms to refresh the Normal-mode caret only when that operation finds the
-editor already focused. The mode/window guards stop the workaround from
-stealing focus from another control, window, or editing mode.
+| Input | What it does |
+| --- | --- |
+| <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move left, down, up, right |
+| <kbd>b</kbd> / <kbd>w</kbd> | Move backward / forward by word |
+| <kbd>0</kbd> / <kbd>$</kbd> | Move to the start / end of the line |
+| <kbd>g</kbd> / <kbd>Shift</kbd>+<kbd>g</kbd> | Move to the start / end of the document |
+| <kbd>+</kbd> / <kbd>-</kbd> | Change editor text size |
+| <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> / <kbd>-</kbd> | Scale the complete interface |
 
-If speech finalization fails, or the document moved while speech was in flight,
-the latest usable hypothesis remains in the voice panel. The `Insert last`
-button recovers it at the current cursor. It is disabled while capture or
-finalization is active and whenever there is no retained transcript.
+The physical <kbd>Insert</kbd> key also enters Insert mode. <kbd>Delete</kbd>
+and <kbd>Backspace</kbd> delete once and then enter Insert mode, which makes
+small corrections quick without leaving Normal mode silently editable.
 
-The mode pill distinguishes Normal, Insert, typed-command, dictating, and
-finalizing states; hover it for mode-specific guidance. Routine guidance stays
-in that tooltip instead of occupying a banner. Speech and Codex have separate
-health pills whose tooltips contain their complete status and relevant recovery
-guidance, avoiding duplicate details beneath the transcript. Service failures
-still raise a notice between the toolbar and editor so they are hard to miss.
-Warnings and errors remain visible until dismissed or replaced by a relevant
-recovery. Failure copy always explains what failed, whether text was preserved
-or left unchanged, and the next recovery step. If failures compete, the most
-recent displaced issue remains available through `Next issue`. In particular,
-a failed Codex refinement cannot hide the optimistically inserted raw
-transcript. Settings, Insert last, and saved state also expose concise contextual
-help on hover.
+## Your text and privacy
 
-Settings replaces the toolbar's separate wrap control. It stages editor-text
-zoom, complete interface scale, word wrap, and the local transcription model
-without disturbing the editor underneath. Apply commits and persists them
-together, while Cancel or Escape discards the staged selection. The model path,
-checking provider, Codex model, both zoom scopes, and word wrap are restored on
-the next launch. While open, plain `+`/`-` changes staged editor text, Ctrl/Cmd `+`/`-`
-changes staged UI scale, `W` toggles staged word wrap, and Enter applies.
-Choosing a model does not interrupt the speech worker until Apply. The default
-download reports byte progress, can be cancelled, verifies its pinned size and
-SHA-256 digest, removes incomplete `.part` files, and only then makes the model
-selectable. Download errors remain inline in Settings and become a foreground
-Speech failure after the modal closes.
+Talkdown keeps the editor buffer, cursor, selection, undo history, and file
+writes under local control.
 
-The voice workspace uses a stable two-column grid so its title, service chips,
-active recording feedback, and recovery action remain aligned. Idle activity
-and inline service-detail rows are omitted because their useful detail now
-lives on the relevant pill. The footer uses three equal cells, which keeps
-cursor metadata centered independently of the saved state and shortcut copy;
-the right cell reads `I insert · : cmd · +/- text` and omits the
-low-value percentages. Chrome and controls use Atkinson Hyperlegible Next Regular,
-Semibold, and Bold; dictated transcript and typed-command prose use Libertinus
-Sans; and the document plus compact status data use the user's generic
-monospace family. Caption,
-body/control, and lead/editor text use a strict 11/14/17 logical-pixel scale
-before the application scale factor is applied.
-Informational/working notices use the dark-wine accent surface;
-offline and error notices use a distinct coral-tinted failure banner, with the
-recovery instruction on its own line.
+- Whisper transcription runs locally after a speech model is installed.
+- The default Harper grammar check also runs locally.
+- Contextual commands, and optional Codex-based dictation cleanup, send a
+  limited window of nearby text to Codex through the signed-in Codex CLI.
+- Codex does not receive direct control of the editor or filesystem. It returns
+  a small proposed replacement that Talkdown validates and applies locally.
+- If a service is unavailable or a response is stale or ambiguous, Talkdown
+  preserves the document and keeps the raw transcript when possible.
+- Talkdown does not read or copy `~/.codex/auth.json`; authentication remains
+  owned by the Codex CLI.
 
-## Configuration
+Local transcription can work without a network connection once the model is
+installed. Contextual commands require Codex and a network connection.
 
-| Variable | Meaning | Default |
+## Current limitations
+
+- Talkdown is an early runnable preview, not yet a polished daily-driver
+  release.
+- Linux has the most complete build and desktop-install instructions. Native
+  audio, dialogs, and packaging still need broader macOS and Windows testing.
+- Speech uses the system’s default microphone; there is no device picker yet.
+- Dictation is push-to-talk and each utterance is currently limited to 30
+  seconds.
+- The default speech model is English. Other whisper.cpp models and language
+  codes can be selected manually, but the first-run flow is English-focused.
+- Contextual commands require a ChatGPT-authenticated Codex installation.
+- The intended Atkinson Hyperlegible Next and Libertinus Sans fonts are not
+  bundled, so the interface may use fallback fonts on your system.
+- Search, crash recovery, multiple open buffers, and automatic endpoint
+  detection are not implemented yet.
+
+See the [roadmap](docs/roadmap.md) for planned work.
+
+## Advanced configuration
+
+Most options are available in Settings. These environment variables are useful
+for custom setups:
+
+| Variable | Purpose | Default |
 | --- | --- | --- |
-| `TALKDOWN_WHISPER_MODEL` | Path to a whisper.cpp GGML model; overrides Settings at launch | saved selection, then downloaded default |
-| `TALKDOWN_WHISPER_LANGUAGE` | Whisper language code, or `auto` | `en` |
-| `TALKDOWN_WHISPER_THREADS` | Positive decoder thread count | available CPUs minus 2, capped at 8 |
-| `TALKDOWN_CODEX_BIN` | Alternate Codex CLI executable | `codex` |
+| `TALKDOWN_WHISPER_MODEL` | Use a specific whisper.cpp GGML model at launch | Saved selection, then the downloaded default |
+| `TALKDOWN_WHISPER_LANGUAGE` | Set a Whisper language code, or `auto` | `en` |
+| `TALKDOWN_WHISPER_THREADS` | Set the number of decoder threads | Available CPUs minus 2, capped at 8 |
+| `TALKDOWN_CODEX_BIN` | Use a different Codex CLI executable | `codex` |
 
-The current speech pipeline caps an utterance at 30 seconds, requests partials
-about every 700 ms on a separate latest-wins decode queue, and sends only the
-final utterance to Codex. It still re-decodes the accumulated utterance rather
-than using a native streaming model. Public Platform speech APIs are
-deliberately absent: ChatGPT/Codex subscription auth is distinct from general
-OpenAI API-key billing. Upstream Codex source also marks the current API-key
-fallback for Realtime in ChatGPT sessions as temporary, so a future
-subscription-authenticated Realtime path is tracked without pretending it is
-available today.
+For detailed build instructions, accelerated backends, integration tests, and
+troubleshooting, see the [development guide](docs/development.md).
 
-## Verify
+## Project documentation
 
-```sh
-cargo fmt --check
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
-
-The default suite includes headless `iced_test` interaction tests for the
-Normal/Insert/Escape boundary, direct IME commits, clipboard bindings, and
-open-line placement. It also includes a deterministic whole-app voice-edit
-test: intercepted `SpeechBridge` and `CodexBridge` drivers deliver partial,
-final, delta, and completion events without opening a microphone or starting
-Codex, while the app still produces and consumes a genuine `CodexRequest`.
-Run these focused checks during app work with:
-
-```sh
-cargo test --no-default-features app::tests::iced_
-cargo test --no-default-features \
-  app::tests::intercepted_voice_edit_is_contextual_and_one_undo_step -- --exact
-```
-
-The current default-feature build discovers 85 tests: 72 run normally and thirteen
-are ignored. (`--no-default-features` discovers 78: 68 normal and ten
-ignored.) The ignored tests cover external state, real inference, or visual
-baselines:
-
-```sh
-cargo test --no-default-features \
-  codex::tests::connects_through_chatgpt_subscription -- --ignored --exact
-
-cargo test --no-default-features \
-  codex::tests::returns_a_schema_valid_fixed_span_edit -- --ignored --exact
-
-TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
-  cargo test speech::integration_tests::loads_model_and_opens_default_microphone \
-  -- --ignored --exact
-
-TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
-TALKDOWN_WHISPER_THREADS=1 \
-  cargo test app::tests::injected_tts_audio_reaches_intercepted_codex_without_a_live_turn \
-  -- --ignored --exact
-
-ICED_TEST_BACKEND=tiny-skia \
-  cargo test --no-default-features \
-  window_snapshot -- --ignored
-
-TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
-TALKDOWN_WHISPER_THREADS=1 \
-TALKDOWN_FAKE_MIC_WAIT_FOR_READY=1 \
-  scripts/with-fake-microphone.sh --tts \
-  "The quick brown fox jumps over the lazy dog." -- \
-  cargo test app::tests::pipewire_tts_microphone_reaches_intercepted_codex \
-  -- --ignored --exact
-```
-
-The first performs a local app-server/auth handshake. The second consumes one
-live Codex turn. The third loads the configured model and opens the default
-microphone without recording an utterance. The fourth requires `espeak-ng`: it
-writes speech to a seekable temporary WAV, injects decoded PCM just below CPAL,
-runs real local Whisper, verifies the genuine request emitted by the app, and
-uses a manually completed intercepted Codex turn. The snapshot command runs
-eight ignored iced tests. The ready/success fixture compares
-`tests/snapshots/main-window-tiny-skia.png`; the hovered mode-help fixture
-compares `tests/snapshots/contextual-help-window-tiny-skia.png`; the hovered
-applied/ignored checker-audit fixture compares
-`tests/snapshots/checker-audit-window-tiny-skia.png`; the staged
-Settings fixture compares `tests/snapshots/settings-window-tiny-skia.png`; the
-discard-confirmation fixture compares
-`tests/snapshots/discard-changes-window-tiny-skia.png`; the Codex
-failure fixture proves its raw transcript is visible and compares
-`tests/snapshots/failure-window-tiny-skia.png`; the model-download failure
-fixture compares `tests/snapshots/model-download-window-tiny-skia.png`; and the 940 × 640 fixture
-compares `tests/snapshots/minimum-window-tiny-skia.png` at the maximum 140%
-scale state while hovering the offline Speech pill over its still-visible error
-notice. It also asserts that critical controls are visible, the voice title and
-service chips align, and footer cursor metadata is centered. All eight render
-only Talkdown's offscreen tiny-skia buffer and never capture the desktop. They
-resolve the unbundled Atkinson Hyperlegible Next and Libertinus Sans families
-plus the generic monospace choice through the host, so their pixels are not yet
-a portable cross-platform CI contract.
-The final command
-feeds eSpeak audio through a temporary PipeWire source into the real
-CPAL/default-device path, then uses real Whisper and an intercepted Codex
-completion.
-
-On PipeWire systems, `scripts/with-fake-microphone.sh` can exercise the actual
-CPAL device path with a temporary per-process source:
-
-```sh
-cargo build --release
-TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
-  scripts/with-fake-microphone.sh --tts \
-  "The quick brown fox jumps over the lazy dog." -- \
-  target/release/talkdown
-```
-
-The child receives both `PIPEWIRE_NODE` and `PULSE_SOURCE`; the script never
-changes the global default input. Snapshot creation/update commands and the
-complete layer boundaries are in the
-[development guide](docs/development.md) and the
-[audio/visual testing research note](docs/research/2026-07-20-audio-and-visual-testing.md).
-
-See [architecture](docs/architecture.md), [development notes](docs/development.md),
-and the [roadmap](docs/roadmap.md) before making substantial changes.
+- [Development guide](docs/development.md) — building, testing, models, and
+  troubleshooting
+- [Architecture](docs/architecture.md) — how the editor, speech, checking, and
+  Codex boundaries fit together
+- [Roadmap](docs/roadmap.md) — current gaps and planned milestones
+- [Agent guidance](AGENTS.md) — safety and workflow requirements for
+  contributors and coding agents
