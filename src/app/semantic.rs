@@ -185,9 +185,11 @@ impl App {
 
     fn check_placed_transcript_locally(&mut self, placed: PlacedTranscript) {
         let plan = self.prepare_harper_check(&placed);
-        let checked = self
-            .harper
-            .check_focused(&plan.original_context, plan.focus.clone());
+        let checked = self.harper.check_focused(
+            &plan.original_context,
+            plan.focus.clone(),
+            self.file.as_deref(),
+        );
         self.finish_harper_check(plan, checked);
     }
 
@@ -287,7 +289,9 @@ impl App {
             self.refresh_checker_status();
             return;
         };
-        let lints = self.harper.review(&context_text);
+        let lints = self
+            .harper
+            .review_for_path(&context_text, self.file.as_deref());
         let audit_ignored = self
             .last_harper_audit
             .as_ref()

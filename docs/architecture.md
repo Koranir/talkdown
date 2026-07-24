@@ -65,9 +65,11 @@ replacement into a `ReplacementPlan` before touching iced content. The edit
 resolver separates empty insertions, exact selections, nearest-target
 resolution, and stale exact-target rebasing. The Harper checker names each
 stage of its conservative pipeline in `checker/harper.rs`: scope
-normalization, finding classification, overlap selection, descending
-correction application, seam normalization, and audit merging. `checker.rs`
-retains the provider, result, and audit facade.
+normalization, file-extension parser selection, finding classification, overlap
+selection, descending correction application, seam normalization, and audit
+merging. Markdown and Org Mode files use Harper's format-aware built-ins;
+untitled and unrecognized files use `PlainEnglish`. `checker.rs` retains the
+provider, result, and audit facade.
 
 ## State ownership
 
@@ -344,7 +346,9 @@ unchanged.
 - Hold `Space`: literal insertion. Talkdown inserts the local final transcript
   immediately at the captured cursor/selection. By default, a reusable
   `harper-core` pipeline then checks a bounded slice of surrounding document
-  text locally and automatically
+  text locally. It selects Harper's Markdown or Org Mode parser from the open
+  file's case-insensitive extension and otherwise uses `PlainEnglish`; the same
+  parser is used when populating the review. It automatically
   applies only non-overlapping, single-suggestion grammar, capitalization,
   punctuation, repetition, boundary, and typo fixes. Spelling guesses, style
   rewrites, and ambiguous alternatives are deliberately skipped. Only findings

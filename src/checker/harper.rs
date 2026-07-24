@@ -3,11 +3,52 @@
 use super::{CheckResult, IgnoreReason, IgnoredLint, LintAudit, LintRecord, LintSuggestion};
 
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
-use harper_core::parsers::PlainEnglish;
+use harper_core::parsers::{Markdown, OrgMode, PlainEnglish};
 use harper_core::spell::FstDictionary;
 use harper_core::{Dialect, Document as HarperDocument, remove_overlaps};
 
 use std::ops::Range;
+use std::path::Path;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum SourceParser {
+    #[default]
+    PlainEnglish,
+    Markdown,
+    OrgMode,
+}
+
+impl SourceParser {
+    fn from_path(path: Option<&Path>) -> Self {
+        let Some(extension) = path
+            .and_then(Path::extension)
+            .and_then(std::ffi::OsStr::to_str)
+        else {
+            return Self::PlainEnglish;
+        };
+
+        if [
+            "md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "mdtxt", "mdtext", "rmd", "qmd",
+        ]
+        .iter()
+        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        {
+            Self::Markdown
+        } else if extension.eq_ignore_ascii_case("org") {
+            Self::OrgMode
+        } else {
+            Self::PlainEnglish
+        }
+    }
+
+    fn document(self, source: &str) -> HarperDocument {
+        match self {
+            Self::PlainEnglish => HarperDocument::new_curated(source, &PlainEnglish),
+            Self::Markdown => HarperDocument::new_curated(source, &Markdown::default()),
+            Self::OrgMode => HarperDocument::new_curated(source, &OrgMode),
+        }
+    }
+}
 
 /// A reusable local Harper pipeline. Keeping it in application state avoids
 /// rebuilding the curated dictionary and linter for every short utterance.
@@ -31,19 +72,27 @@ impl HarperChecker {
             source,
             requested_scope: 0..end,
             focus_end: end,
+            parser: SourceParser::PlainEnglish,
         })
     }
 
     /// Checks a bounded slice of the document while applying only findings in
     /// the sentence containing the newly inserted transcript. Character
-    /// offsets are relative to `source`, matching Harper's span unit.
-    pub fn check_focused(&mut self, source: &str, focus: Range<usize>) -> CheckResult {
+    /// offsets are relative to `source`, matching Harper's span unit. The
+    /// specialized Harper parser is inferred from the open file's extension.
+    pub fn check_focused(
+        &mut self,
+        source: &str,
+        focus: Range<usize>,
+        path: Option<&Path>,
+    ) -> CheckResult {
         let seams = normalize_dictation_seams(SeamNormalizationRequest { source, focus });
         let sentence_scope = containing_sentence(&seams.text, &seams.focus);
         let result = self.check_scoped(ScopedCheckRequest {
             source: &seams.text,
             requested_scope: sentence_scope,
             focus_end: seams.focus.end,
+            parser: SourceParser::from_path(path),
         });
 
         merge_seam_fixes_into_audit(result, seams.applied_fixes)
@@ -51,8 +100,8 @@ impl HarperChecker {
 
     /// Returns every current finding in a bounded review context without
     /// changing the supplied text or applying the automatic-checking policy.
-    pub fn review(&mut self, source: &str) -> Vec<LintRecord> {
-        let document = HarperDocument::new_curated(source, &PlainEnglish);
+    pub fn review_for_path(&mut self, source: &str, path: Option<&Path>) -> Vec<LintRecord> {
+        let document = SourceParser::from_path(path).document(source);
         let mut findings = self
             .linter
             .lint(&document)
@@ -65,7 +114,7 @@ impl HarperChecker {
 
     fn check_scoped(&mut self, request: ScopedCheckRequest<'_>) -> CheckResult {
         let scope = normalize_check_scope(request);
-        let harper_document = HarperDocument::new_curated(scope.source, &PlainEnglish);
+        let harper_document = scope.parser.document(scope.source);
         let detected = self.linter.lint(&harper_document);
 
         let ClassifiedLints {
@@ -105,6 +154,7 @@ struct ScopedCheckRequest<'source> {
     source: &'source str,
     requested_scope: Range<usize>,
     focus_end: usize,
+    parser: SourceParser,
 }
 
 /// A scoped request whose character offsets are safe for `source`.
@@ -112,6 +162,7 @@ struct NormalizedCheckScope<'source> {
     source: &'source str,
     lint_scope: Range<usize>,
     focus_end: usize,
+    parser: SourceParser,
 }
 
 /// Inputs to the deterministic whitespace pass around newly dictated text.
@@ -190,6 +241,7 @@ fn normalize_check_scope(request: ScopedCheckRequest<'_>) -> NormalizedCheckScop
         lint_scope: request.requested_scope.start.min(source_len)
             ..request.requested_scope.end.min(source_len),
         focus_end: request.focus_end.min(source_len),
+        parser: request.parser,
     }
 }
 

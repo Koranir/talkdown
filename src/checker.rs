@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn fixes_missing_space_at_a_sentence_boundary() {
-        let result = HarperChecker::default().check_focused("foo.Bar", 4..7);
+        let result = HarperChecker::default().check_focused("foo.Bar", 4..7, None);
 
         assert_eq!(result.text, "foo. Bar");
         assert!(!result.audit.applied.is_empty());
@@ -195,7 +195,8 @@ mod tests {
 
     #[test]
     fn focused_check_uses_context_but_does_not_rewrite_old_errors() {
-        let result = HarperChecker::default().check_focused("this is an note.New words", 16..25);
+        let result =
+            HarperChecker::default().check_focused("this is an note.New words", 16..25, None);
 
         assert_eq!(result.text, "this is an note. New words");
         assert!(result.audit.ignored.iter().any(|ignored| {
@@ -206,7 +207,7 @@ mod tests {
 
     #[test]
     fn focused_check_can_fix_the_adjacent_context_in_the_same_sentence() {
-        let result = HarperChecker::default().check_focused("an test.", 3..8);
+        let result = HarperChecker::default().check_focused("an test.", 3..8, None);
 
         assert_eq!(result.text, "a test.");
         assert_eq!(result.focus_end, 7);
@@ -223,7 +224,7 @@ mod tests {
     fn focused_check_stops_after_a_dictated_sentence() {
         let mut checker = HarperChecker::default();
 
-        let result = checker.check_focused("New words.an note.", 0..10);
+        let result = checker.check_focused("New words.an note.", 0..10, None);
 
         assert_eq!(result.text, "New words. an note.");
         assert_eq!(result.focus_end, 11);
@@ -244,6 +245,46 @@ mod tests {
         assert!(result.audit.ignored.iter().any(|lint| {
             lint.lint.kind == LintKind::Spelling && lint.reason == IgnoreReason::PolicyExcluded
         }));
+    }
+
+    #[test]
+    fn selects_specialized_parsers_from_case_insensitive_file_extensions() {
+        let mut checker = HarperChecker::default();
+        let markdown_source = "`this is an test.`";
+        let markdown_focus = 1..markdown_source.chars().count() - 1;
+
+        assert!(
+            !checker
+                .review_for_path(markdown_source, Some(std::path::Path::new("notes.txt")))
+                .is_empty()
+        );
+        assert!(
+            checker
+                .review_for_path(markdown_source, Some(std::path::Path::new("notes.MD")))
+                .is_empty()
+        );
+        assert_eq!(
+            checker
+                .check_focused(
+                    markdown_source,
+                    markdown_focus,
+                    Some(std::path::Path::new("notes.MD")),
+                )
+                .text,
+            markdown_source
+        );
+
+        let org_source = "#+BEGIN_SRC\nthis is an test.\n#+END_SRC";
+        assert!(
+            !checker
+                .review_for_path(org_source, Some(std::path::Path::new("notes.txt")))
+                .is_empty()
+        );
+        assert!(
+            checker
+                .review_for_path(org_source, Some(std::path::Path::new("notes.ORG")))
+                .is_empty()
+        );
     }
 
     #[test]

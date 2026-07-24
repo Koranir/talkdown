@@ -129,8 +129,11 @@ then an installed default. Unit tests intercept preference writes instead of
 touching the user's platform configuration file.
 Harper is the default literal-dictation checker. It runs fully locally and
 performs a bounded post-insertion pass over the sentence containing the spoken
-span. It auto-applies only conservative single-suggestion fixes plus missing
-whitespace at either transcript seam. Its latest in-memory
+span. Markdown and Org Mode paths are detected case-insensitively and use
+Harper's corresponding format-aware parser for both the automatic pass and the
+review; untitled and unrecognized paths use `PlainEnglish`. It auto-applies only
+conservative single-suggestion fixes plus missing whitespace at either
+transcript seam. Its latest in-memory
 audit records every applied finding and every skipped finding, with explicit
 outside-sentence, policy, ambiguity, missing-suggestion, overlap, or
 document-validation reasons. The Checker pill keeps the summary short and its

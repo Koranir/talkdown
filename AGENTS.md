@@ -80,8 +80,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 95 tests: 82 normal and thirteen
-  ignored. The no-default-feature build discovers 88: 78 normal and ten
+- The default-feature build currently discovers 96 tests: 83 normal and thirteen
+  ignored. The no-default-feature build discovers 89: 79 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo nextest run` passes with the default feature and with
   `--no-default-features`; nextest keeps concurrent iced simulators in isolated

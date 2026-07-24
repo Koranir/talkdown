@@ -2075,6 +2075,32 @@ fn harper_checks_literal_dictation_locally_as_one_undo_step() {
     assert!(codex.try_request().is_none());
     assert!(app.document.undo());
     assert_eq!(app.document.text(), "Note: ");
+
+    let (mut markdown_app, _speech, _codex) = test_app("`this is an `");
+    markdown_app.file = Some(PathBuf::from("notes.md"));
+    markdown_app.checking_provider = CheckingProvider::Harper;
+    markdown_app
+        .document
+        .perform(text_editor::Action::Move(text_editor::Motion::Left), false);
+    let markdown_anchor = markdown_app.document.snapshot();
+
+    markdown_app.optimistic_insert(markdown_anchor, "test.".into());
+
+    assert_eq!(markdown_app.document.text(), "`this is an test.`");
+    assert_eq!(
+        markdown_app
+            .last_harper_audit
+            .as_ref()
+            .expect("Markdown Harper audit")
+            .fixes(),
+        0
+    );
+    assert!(
+        markdown_app
+            .checker_review
+            .as_ref()
+            .is_some_and(|review| review.lints.is_empty())
+    );
 }
 
 #[test]
