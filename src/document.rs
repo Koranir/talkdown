@@ -240,6 +240,14 @@ impl Document {
         )
     }
 
+    pub fn delete_word_forward(&mut self) -> bool {
+        self.delete_by_motion(text_editor::Motion::WordRight, text_editor::Edit::Delete)
+    }
+
+    pub fn delete_word_backward(&mut self) -> bool {
+        self.delete_by_motion(text_editor::Motion::WordLeft, text_editor::Edit::Backspace)
+    }
+
     pub fn insert(&mut self, text: &str) -> Result<(), ReplaceError> {
         let snapshot = self.snapshot();
         self.replace(snapshot.target_range(), text)
@@ -270,6 +278,15 @@ impl Document {
     fn perform_authorized_edit(&mut self, action: text_editor::Action) -> bool {
         let before = HistoryEntry::capture(&self.content);
         self.content.perform(action);
+        self.finish_text_change(before, HistoryMode::RecordNewEntry)
+    }
+
+    fn delete_by_motion(&mut self, motion: text_editor::Motion, edit: text_editor::Edit) -> bool {
+        let before = HistoryEntry::capture(&self.content);
+        if self.content.selection().is_none() {
+            self.content.perform(text_editor::Action::Select(motion));
+        }
+        self.content.perform(text_editor::Action::Edit(edit));
         self.finish_text_change(before, HistoryMode::RecordNewEntry)
     }
 
@@ -590,5 +607,31 @@ mod tests {
         assert_eq!(document.text(), "safe");
         assert_eq!(document.revision(), 0);
         assert!(!document.undo());
+    }
+
+    #[test]
+    fn word_deletions_are_single_undoable_transactions() {
+        let mut backward = Document::with_text("one two three");
+        backward.perform(
+            text_editor::Action::Move(text_editor::Motion::DocumentEnd),
+            false,
+        );
+
+        assert!(backward.delete_word_backward());
+        assert_eq!(backward.text(), "one two ");
+        assert!(backward.undo());
+        assert_eq!(backward.text(), "one two three");
+        assert_eq!(backward.snapshot().cursor, "one two three".len());
+        assert_eq!(backward.snapshot().selection, None);
+        assert!(!backward.undo());
+
+        let mut forward = Document::with_text("one two three");
+        assert!(forward.delete_word_forward());
+        assert_eq!(forward.text(), " two three");
+        assert!(forward.undo());
+        assert_eq!(forward.text(), "one two three");
+        assert_eq!(forward.snapshot().cursor, 0);
+        assert_eq!(forward.snapshot().selection, None);
+        assert!(!forward.undo());
     }
 }

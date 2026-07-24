@@ -151,6 +151,44 @@ pub(super) fn editor_binding(
         return text_editor::Binding::from_key_press(key_press);
     }
 
+    // Word deletion is a trusted local transaction because iced's text editor
+    // otherwise reduces a modified Delete or Backspace to one character.
+    // Handle it before command shortcuts, which would also discard Ctrl/Cmd
+    // deletion in Normal mode.
+    if mode != Mode::Command {
+        match key_press.key.as_ref() {
+            keyboard::Key::Named(key::Named::Delete) => {
+                if key_press.modifiers.jump() {
+                    return Some(text_editor::Binding::Custom(if mode == Mode::Normal {
+                        Message::DeleteWordForwardAndEnterInsert
+                    } else {
+                        Message::DeleteWordForward
+                    }));
+                }
+                if mode == Mode::Normal {
+                    return Some(text_editor::Binding::Custom(
+                        Message::DeleteForwardAndEnterInsert,
+                    ));
+                }
+            }
+            keyboard::Key::Named(key::Named::Backspace) => {
+                if key_press.modifiers.jump() {
+                    return Some(text_editor::Binding::Custom(if mode == Mode::Normal {
+                        Message::DeleteWordBackwardAndEnterInsert
+                    } else {
+                        Message::DeleteWordBackward
+                    }));
+                }
+                if mode == Mode::Normal {
+                    return Some(text_editor::Binding::Custom(
+                        Message::DeleteBackwardAndEnterInsert,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
     if key_press.modifiers.command() {
         return match latin {
             Some('=' | '+') => Some(text_editor::Binding::Custom(Message::AdjustUiScale(
@@ -184,21 +222,11 @@ pub(super) fn editor_binding(
         return None;
     }
 
-    match key_press.key.as_ref() {
-        keyboard::Key::Named(key::Named::Insert) => {
-            return Some(text_editor::Binding::Custom(Message::EnterInsert));
-        }
-        keyboard::Key::Named(key::Named::Delete) => {
-            return Some(text_editor::Binding::Custom(
-                Message::DeleteForwardAndEnterInsert,
-            ));
-        }
-        keyboard::Key::Named(key::Named::Backspace) => {
-            return Some(text_editor::Binding::Custom(
-                Message::DeleteBackwardAndEnterInsert,
-            ));
-        }
-        _ => {}
+    if matches!(
+        key_press.key.as_ref(),
+        keyboard::Key::Named(key::Named::Insert)
+    ) {
+        return Some(text_editor::Binding::Custom(Message::EnterInsert));
     }
 
     if matches!(

@@ -353,6 +353,10 @@ enum Message {
     DeleteForward,
     DeleteForwardAndEnterInsert,
     DeleteBackwardAndEnterInsert,
+    DeleteWordForward,
+    DeleteWordBackward,
+    DeleteWordForwardAndEnterInsert,
+    DeleteWordBackwardAndEnterInsert,
     Undo,
     Redo,
     EditorScrollbarScrolled(iced::widget::scrollable::Viewport),
@@ -965,6 +969,12 @@ impl App {
             Message::DeleteForward => self.delete_forward(),
             Message::DeleteForwardAndEnterInsert => self.delete_forward_and_enter_insert(),
             Message::DeleteBackwardAndEnterInsert => self.delete_backward_and_enter_insert(),
+            Message::DeleteWordForward => self.delete_word_forward(),
+            Message::DeleteWordBackward => self.delete_word_backward(),
+            Message::DeleteWordForwardAndEnterInsert => self.delete_word_forward_and_enter_insert(),
+            Message::DeleteWordBackwardAndEnterInsert => {
+                self.delete_word_backward_and_enter_insert()
+            }
             Message::Undo => self.undo_document(),
             Message::Redo => self.redo_document(),
             Message::EditorScrollbarScrolled(viewport) => {

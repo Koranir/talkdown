@@ -339,6 +339,20 @@ impl ModalHarness {
                 let _ = self.document.delete_backward();
                 self.mode = Mode::Insert;
             }
+            Message::DeleteWordForward => {
+                let _ = self.document.delete_word_forward();
+            }
+            Message::DeleteWordBackward => {
+                let _ = self.document.delete_word_backward();
+            }
+            Message::DeleteWordForwardAndEnterInsert => {
+                let _ = self.document.delete_word_forward();
+                self.mode = Mode::Insert;
+            }
+            Message::DeleteWordBackwardAndEnterInsert => {
+                let _ = self.document.delete_word_backward();
+                self.mode = Mode::Insert;
+            }
             Message::GlobalEscape => self.mode = Mode::Normal,
             unexpected => panic!("unexpected modal test message: {unexpected:?}"),
         }
@@ -2723,6 +2737,54 @@ fn iced_open_line_above_places_the_insert_cursor_on_the_blank_line() {
 
 #[test]
 fn iced_insert_delete_and_backspace_keys_enter_insert_mode() {
+    fn named_key_press(named: key::Named, modifiers: keyboard::Modifiers) -> text_editor::KeyPress {
+        let key = keyboard::Key::Named(named);
+        text_editor::KeyPress {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            modifiers,
+            text: None,
+            status: text_editor::Status::Focused { is_hovered: false },
+        }
+    }
+
+    let jump = if cfg!(target_os = "macos") {
+        keyboard::Modifiers::ALT
+    } else {
+        keyboard::Modifiers::CTRL
+    };
+    for modifiers in [jump, jump | keyboard::Modifiers::SHIFT] {
+        assert!(matches!(
+            editor_binding(Mode::Normal, named_key_press(key::Named::Delete, modifiers)),
+            Some(text_editor::Binding::Custom(
+                Message::DeleteWordForwardAndEnterInsert
+            ))
+        ));
+        assert!(matches!(
+            editor_binding(
+                Mode::Normal,
+                named_key_press(key::Named::Backspace, modifiers)
+            ),
+            Some(text_editor::Binding::Custom(
+                Message::DeleteWordBackwardAndEnterInsert
+            ))
+        ));
+        assert!(matches!(
+            editor_binding(Mode::Insert, named_key_press(key::Named::Delete, modifiers)),
+            Some(text_editor::Binding::Custom(Message::DeleteWordForward))
+        ));
+        assert!(matches!(
+            editor_binding(
+                Mode::Insert,
+                named_key_press(key::Named::Backspace, modifiers)
+            ),
+            Some(text_editor::Binding::Custom(Message::DeleteWordBackward))
+        ));
+    }
+
     let mut editor = ModalHarness::new("abcd");
     editor.simulate(|ui| {
         assert_eq!(ui.tap_key(key::Named::Home), event::Status::Captured);
@@ -2744,6 +2806,36 @@ fn iced_insert_delete_and_backspace_keys_enter_insert_mode() {
         assert_eq!(ui.tap_key(key::Named::Backspace), event::Status::Captured);
     });
     assert_eq!(editor.document.text(), "bc");
+    assert_eq!(editor.mode, Mode::Insert);
+
+    editor.apply(Message::GlobalEscape);
+    editor.document = Document::with_text("one two three");
+    editor.document.perform(
+        text_editor::Action::Move(text_editor::Motion::DocumentEnd),
+        false,
+    );
+    editor.apply(Message::DeleteWordBackwardAndEnterInsert);
+    assert_eq!(editor.document.text(), "one two ");
+    assert_eq!(editor.mode, Mode::Insert);
+
+    editor.apply(Message::GlobalEscape);
+    editor.document = Document::with_text("one two three");
+    editor.apply(Message::DeleteWordForwardAndEnterInsert);
+    assert_eq!(editor.document.text(), " two three");
+    assert_eq!(editor.mode, Mode::Insert);
+
+    editor.document = Document::with_text("one two three");
+    editor.document.perform(
+        text_editor::Action::Move(text_editor::Motion::DocumentEnd),
+        false,
+    );
+    editor.apply(Message::DeleteWordBackward);
+    assert_eq!(editor.document.text(), "one two ");
+    assert_eq!(editor.mode, Mode::Insert);
+
+    editor.document = Document::with_text("one two three");
+    editor.apply(Message::DeleteWordForward);
+    assert_eq!(editor.document.text(), " two three");
     assert_eq!(editor.mode, Mode::Insert);
 }
 

@@ -176,6 +176,30 @@ impl App {
         self.finish_entering_insert_mode()
     }
 
+    pub(super) fn delete_word_forward(&mut self) -> Task<Message> {
+        if self.document.delete_word_forward() {
+            self.set_transient_notice(self.default_notice());
+        }
+        self.read_editor_scroll(true)
+    }
+
+    pub(super) fn delete_word_backward(&mut self) -> Task<Message> {
+        if self.document.delete_word_backward() {
+            self.set_transient_notice(self.default_notice());
+        }
+        self.read_editor_scroll(true)
+    }
+
+    pub(super) fn delete_word_forward_and_enter_insert(&mut self) -> Task<Message> {
+        let _ = self.document.delete_word_forward();
+        self.finish_entering_insert_mode()
+    }
+
+    pub(super) fn delete_word_backward_and_enter_insert(&mut self) -> Task<Message> {
+        let _ = self.document.delete_word_backward();
+        self.finish_entering_insert_mode()
+    }
+
     pub(super) fn undo_document(&mut self) -> Task<Message> {
         if self.document.undo() {
             self.editor_scroll_y = 0.0;
