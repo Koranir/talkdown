@@ -1888,8 +1888,7 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
     let (mut app, _speech, _codex) = test_app("protected");
     let original_text = app.document.text();
     let staged_audio_multiplier = model::DEFAULT_AUDIO_MULTIPLIER_PERCENT
-        .saturating_sub(AUDIO_MULTIPLIER_STEP_PERCENT.unsigned_abs())
-        .max(model::MIN_AUDIO_MULTIPLIER_PERCENT);
+        .saturating_sub(AUDIO_MULTIPLIER_STEP_PERCENT.unsigned_abs());
 
     let open_messages = {
         let mut ui = iced_test::simulator(app.view());
