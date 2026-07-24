@@ -92,6 +92,21 @@ Start an untitled buffer:
 cargo run --release
 ```
 
+### Linux desktop install
+
+Build a release binary and install a desktop launcher and scalable icon for the
+current user:
+
+```sh
+./scripts/install.sh
+```
+
+The default prefix is `~/.local`. Override it with `PREFIX` or `--prefix`, pass
+an accelerated Whisper backend with `--features whisper-cuda` (or
+`whisper-vulkan`), and use `--no-build` to reinstall an existing release
+binary. The generated desktop entry contains the absolute binary path, so it
+does not depend on the graphical session inheriting the shell's `PATH`.
+
 The CPU Whisper backend is enabled by default. Optional acceleration features:
 
 ```sh

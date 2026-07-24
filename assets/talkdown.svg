@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="512"
+     height="512"
+     viewBox="0 0 512 512"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">Talkdown</title>
+  <desc id="description">A document with transcription bars held by a microphone stand.</desc>
+
+  <rect width="512" height="512" rx="104" fill="#151515"/>
+  <rect x="18" y="18" width="476" height="476" rx="88"
+        fill="#191919" stroke="#414141" stroke-width="12"/>
+
+  <path d="M174 76h102l62 62v130c0 45-37 82-82 82s-82-37-82-82z"
+        fill="#26000F" stroke="#FF0095" stroke-width="24"
+        stroke-linejoin="round"/>
+  <path d="M276 76v62h62"
+        fill="none" stroke="#FF0095" stroke-width="24"
+        stroke-linejoin="round"/>
+  <path d="M214 195v68M256 166v126M298 206v46"
+        fill="none" stroke="#FF0095" stroke-width="18"
+        stroke-linecap="round"/>
+  <path d="M130 246v18c0 78 56 134 126 134s126-56 126-134v-18"
+        fill="none" stroke="#C9C9C9" stroke-width="24"
+        stroke-linecap="round"/>
+  <path d="M256 398v42M202 440h108"
+        fill="none" stroke="#C9C9C9" stroke-width="24"
+        stroke-linecap="round"/>
+</svg>

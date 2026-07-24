@@ -24,6 +24,19 @@ WHISPER_DONT_GENERATE_BINDINGS=1 cargo build
 Native file dialogs use the desktop portal where available. Ensure a suitable
 `xdg-desktop-portal` backend is running on Linux desktops.
 
+For a local Linux desktop installation, run:
+
+```sh
+./scripts/install.sh
+```
+
+This builds the release binary and installs it under `~/.local/bin`, with the
+desktop entry and scalable icon under the matching `~/.local/share`
+directories. `PREFIX=/another/prefix` or `--prefix /another/prefix` changes the
+destination. The installer accepts `--features whisper-cuda` or
+`--features whisper-vulkan`, and `--no-build` reuses
+`target/release/talkdown`.
+
 ## Local model
 
 Open Settings to download Talkdown’s English `base.en` default into the

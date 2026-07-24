@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Talkdown
+GenericName=Voice-first Text Editor
+Comment=Edit text with keyboard and local voice transcription
+Exec=talkdown %f
+Icon=talkdown
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;
+Keywords=text;editor;voice;dictation;speech;
+StartupNotify=true
+StartupWMClass=Talkdown
