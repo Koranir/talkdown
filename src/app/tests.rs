@@ -1887,6 +1887,9 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
 
     let (mut app, _speech, _codex) = test_app("protected");
     let original_text = app.document.text();
+    let staged_audio_multiplier = model::DEFAULT_AUDIO_MULTIPLIER_PERCENT
+        .saturating_sub(AUDIO_MULTIPLIER_STEP_PERCENT.unsigned_abs())
+        .max(model::MIN_AUDIO_MULTIPLIER_PERCENT);
 
     let open_messages = {
         let mut ui = iced_test::simulator(app.view());
@@ -1946,7 +1949,7 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
             ui_scale_percent: 110,
             word_wrap: false,
             reduce_audio_while_listening: false,
-            audio_multiplier_percent: 10,
+            audio_multiplier_percent: staged_audio_multiplier,
             speech_model_path: None,
             checking_provider: CheckingProvider::Codex,
             codex_model: None,
@@ -1975,7 +1978,7 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
     assert_eq!(app.ui_scale_percent, 110);
     assert!(!app.word_wrap);
     assert!(!app.reduce_audio_while_listening);
-    assert_eq!(app.audio_multiplier_percent, 10);
+    assert_eq!(app.audio_multiplier_percent, staged_audio_multiplier);
     assert_eq!(app.document.text(), original_text);
     let saved = app
         .test_saved_preferences
@@ -1985,7 +1988,7 @@ fn settings_modal_stages_applies_and_cancels_without_editing() -> Result<(), Err
     assert_eq!(saved.ui_scale_percent, 110);
     assert!(!saved.word_wrap);
     assert!(!saved.reduce_audio_while_listening);
-    assert_eq!(saved.audio_multiplier_percent, 10);
+    assert_eq!(saved.audio_multiplier_percent, staged_audio_multiplier);
     assert_eq!(saved.checking_provider, CheckingProvider::Codex);
 
     // Modal keyboard bindings stage changes, and Escape discards them.
