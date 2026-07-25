@@ -269,6 +269,16 @@ cargo test --no-default-features \
   -- --exact
 ```
 
+A retained-interface regression covers iced's renderer cache directly. It
+keeps a focused caret below a long editor's visible viewport, renders `-`
+followed by `+`, and verifies the complete document snapshot survives:
+
+```sh
+cargo test --no-default-features \
+  app::tests::editor_text_zoom_rebuilds_retained_layout_cache \
+  -- --exact
+```
+
 The settings transaction has its own simulator regression covering staged
 values, Apply, Escape/Cancel, and the underlying editor input shield:
 
@@ -361,8 +371,8 @@ TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 96 tests: 83 run normally and
-thirteen are ignored. The no-default-feature build discovers 89: 79 run
+The default-feature build currently discovers 97 tests: 84 run normally and
+thirteen are ignored. The no-default-feature build discovers 90: 80 run
 normally and ten are ignored.
 
 The two Codex checks and native microphone check above, the injected-audio
