@@ -134,6 +134,12 @@ impl Document {
         &self.content
     }
 
+    /// Rebuilds iced's renderer-owned editor state without changing the
+    /// authoritative document, cursor, revision, dirty state, or history.
+    pub fn rebuild_editor_layout_cache(&mut self) {
+        self.content = HistoryEntry::capture(&self.content).restore();
+    }
+
     pub fn text(&self) -> String {
         self.content.text()
     }
@@ -551,6 +557,11 @@ mod tests {
         let mut document = Document::with_text("hello");
         document.replace(5..5, " world").unwrap();
         assert_eq!(document.revision(), 1);
+        let edited = document.snapshot();
+
+        document.rebuild_editor_layout_cache();
+        assert_eq!(document.snapshot(), edited);
+        assert!(document.is_dirty());
 
         assert!(document.undo());
         assert_eq!(document.text(), "hello");

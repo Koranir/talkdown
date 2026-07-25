@@ -275,7 +275,7 @@ impl App {
         self.word_wrap = settings.word_wrap;
         self.reduce_audio_while_listening = settings.reduce_audio_while_listening;
         self.audio_multiplier_percent = settings.audio_multiplier_percent;
-        self.text_scale_percent = settings.text_scale_percent;
+        self.set_text_scale_percent(settings.text_scale_percent);
         self.checking_provider = settings.checking_provider;
         self.refresh_checker_status();
         self.codex_model.clone_from(&settings.codex_model);

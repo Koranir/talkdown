@@ -4,6 +4,9 @@ use super::*;
 use crate::codex::CodexTestDriver;
 use crate::speech::SpeechTestDriver;
 use iced::Settings;
+use iced_test::core::renderer::Headless;
+use iced_test::runtime::UserInterface;
+use iced_test::runtime::user_interface;
 use iced_test::selector::id;
 use iced_test::{Error, Simulator};
 
@@ -1875,6 +1878,61 @@ fn text_and_interface_zoom_shortcuts_are_scoped_and_bounded() -> Result<(), Erro
         0.8
     );
     Ok(())
+}
+
+#[test]
+fn editor_text_zoom_rebuilds_retained_layout_cache() {
+    fn render_with_cache(
+        app: &App,
+        renderer: &mut iced_test::renderer::Renderer,
+        cache: user_interface::Cache,
+    ) -> user_interface::Cache {
+        let mut ui = UserInterface::build(app.view(), WINDOW_SIZE.into(), cache, renderer);
+        let mut focus =
+            iced_test::core::widget::operation::focusable::focus::<Message>(EDITOR_ID.into());
+        ui.operate(
+            renderer,
+            &mut iced_test::core::widget::operation::black_box(&mut focus),
+        );
+        ui.draw(
+            renderer,
+            &app.theme(),
+            &iced_test::core::renderer::Style::default(),
+            iced::mouse::Cursor::Unavailable,
+        );
+        ui.into_cache()
+    }
+
+    let mut renderer =
+        iced_test::futures::futures::executor::block_on(iced_test::renderer::Renderer::new(
+            iced_test::core::renderer::Settings {
+                default_font: UI_FONT,
+                default_text_size: iced::Pixels(BODY_SIZE),
+                ..iced_test::core::renderer::Settings::default()
+            },
+            Some("tiny-skia"),
+        ))
+        .expect("create headless renderer");
+    let text = (0..120)
+        .map(|line| format!("line {line}: zooming must preserve this editor buffer"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut app, _speech, _codex) = test_app(&text);
+    let cache = render_with_cache(&app, &mut renderer, user_interface::Cache::default());
+    let _ = app
+        .document
+        .perform(text_editor::Action::Scroll { lines: 20 }, false);
+    app.editor_scroll_y = 20.0 * app.editor_line_height();
+    let original = app.document.snapshot();
+    let original_scroll_y = app.editor_scroll_y;
+
+    let _ = app.update(Message::AdjustTextScale(-TEXT_SCALE_STEP_PERCENT));
+    let cache = render_with_cache(&app, &mut renderer, cache);
+    let _ = app.update(Message::AdjustTextScale(TEXT_SCALE_STEP_PERCENT));
+    let _cache = render_with_cache(&app, &mut renderer, cache);
+
+    assert_eq!(app.document.snapshot(), original);
+    assert_eq!(app.editor_scroll_y, original_scroll_y);
 }
 
 #[test]

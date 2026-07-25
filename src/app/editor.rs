@@ -227,16 +227,46 @@ impl App {
     }
 
     pub(super) fn adjust_text_scale(&mut self, delta: i16) -> Task<Message> {
-        let previous = self.text_scale_percent;
-        self.text_scale_percent = (i32::from(self.text_scale_percent) + i32::from(delta)).clamp(
+        let scale_percent = (i32::from(self.text_scale_percent) + i32::from(delta)).clamp(
             i32::from(MIN_TEXT_SCALE_PERCENT),
             i32::from(MAX_TEXT_SCALE_PERCENT),
         ) as u16;
+        let changed = self.set_text_scale_percent(scale_percent);
         self.set_transient_notice(self.default_notice());
-        if self.text_scale_percent != previous {
+        if changed {
             self.persist_preferences_or_warn();
         }
         Task::none()
+    }
+
+    pub(super) fn set_text_scale_percent(&mut self, scale_percent: u16) -> bool {
+        let scale_percent = scale_percent.clamp(MIN_TEXT_SCALE_PERCENT, MAX_TEXT_SCALE_PERCENT);
+        if scale_percent == self.text_scale_percent {
+            return false;
+        }
+
+        let scroll_line = (self.editor_scroll_y / self.editor_line_height()).round() as i32;
+        self.text_scale_percent = scale_percent;
+
+        // iced/cosmic-text invalidates offscreen line layouts when metrics
+        // change. A second size change can then query an offscreen caret from
+        // that incomplete cache and panic. Rebuild only the renderer-owned
+        // Content state; Document keeps text, cursor, history, and revision.
+        self.document.rebuild_editor_layout_cache();
+        self.editor_scroll_y = (scroll_line as f32 * self.editor_line_height()).max(0.0);
+        if self.editor_scroll_y > 0.0 {
+            // A fresh iced Content starts with a 1 px line metric, so this
+            // integer line action restores the intended pixel offset before
+            // layout installs the configured editor metrics.
+            let _ = self.document.perform(
+                text_editor::Action::Scroll {
+                    lines: self.editor_scroll_y.round() as i32,
+                },
+                false,
+            );
+        }
+
+        true
     }
 
     pub(super) fn adjust_ui_scale(&mut self, delta: i16) -> Task<Message> {

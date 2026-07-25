@@ -236,6 +236,11 @@ footer deliberately omits both low-value percentages and retains the
 `I insert · : cmd · +/- text` shortcut cue. Zoom never changes
 document text, UTF-8 cursor offsets, or revision state, and its routine feedback remains
 contextual instead of opening a banner.
+Pinned iced can discard an offscreen caret line's cosmic-text layout after
+editor metrics change and panic on a later size change. Each committed
+editor-text scale therefore rebuilds only iced's renderer-owned `Content`
+cache, restoring the cursor, selection, and logical scroll line while leaving
+text, dirty state, revision, and undo history authoritative and unchanged.
 
 `settings: Option<SettingsDraft>` owns the modal transaction. Opening Settings
 copies the committed editor-text scale, UI scale, word wrap, system-audio
