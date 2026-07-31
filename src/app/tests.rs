@@ -427,6 +427,7 @@ fn harper_context_never_splits_utf8_or_crlf_boundaries() {
 #[test]
 fn intercepted_voice_edit_is_contextual_and_one_undo_step() {
     let (mut app, speech, codex) = test_app("Context: ");
+    app.file = Some(PathBuf::from("notes/context.typ"));
     let timeout = Duration::from_secs(1);
 
     app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
@@ -462,6 +463,7 @@ fn intercepted_voice_edit_is_contextual_and_one_undo_step() {
     let request = codex.expect_request(timeout);
     assert_eq!(request.intent, EditIntent::Insert);
     assert_eq!(request.transcript, "brave new world");
+    assert_eq!(request.file_name.as_deref(), Some("context.typ"));
     assert_eq!(
         request
             .snapshot
