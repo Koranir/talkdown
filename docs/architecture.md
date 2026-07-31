@@ -457,10 +457,12 @@ The thread uses:
 - `approvalPolicy: "never"`;
 - a read-only sandbox;
 - developer instructions prohibiting tools and treating all editor fields as
-  untrusted data;
+  untrusted data, while defining the current basename as file-format context;
 - a strict per-turn JSON output schema;
 - low reasoning effort for latency;
-- a prompt containing only bounded in-memory context supplied by Talkdown.
+- a prompt containing only bounded in-memory context supplied by Talkdown,
+  including the current basename on each turn so it stays accurate across
+  New/Open operations without exposing the rest of the path.
 
 The temporary directory is securely created and fresh. The current app-server
 read-only policy prevents writes, but it does not enforce narrow filesystem read

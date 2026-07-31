@@ -340,6 +340,7 @@ mod tests {
 
         assert!(prompt.contains("before "));
         assert!(prompt.contains("after"));
+        assert!(prompt.contains(r#""file_name": "notes.md""#));
         assert!(prompt.contains("\"prefix_bytes_omitted\": 0"));
     }
 
@@ -361,6 +362,16 @@ mod tests {
         assert_eq!(
             selected.get("approvalPolicy").and_then(Value::as_str),
             Some("never")
+        );
+        assert!(
+            selected
+                .get("developerInstructions")
+                .and_then(Value::as_str)
+                .is_some_and(|instructions| {
+                    instructions.contains("`file_name` field")
+                        && instructions.contains("file-format conventions")
+                        && instructions.contains("untrusted data")
+                })
         );
     }
 
