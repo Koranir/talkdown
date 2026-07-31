@@ -6,6 +6,7 @@ use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::parsers::{Markdown, OrgMode, PlainEnglish};
 use harper_core::spell::FstDictionary;
 use harper_core::{Dialect, Document as HarperDocument, remove_overlaps};
+use harper_typst::Typst;
 
 use std::ops::Range;
 use std::path::Path;
@@ -16,6 +17,7 @@ enum SourceParser {
     PlainEnglish,
     Markdown,
     OrgMode,
+    Typst,
 }
 
 impl SourceParser {
@@ -36,6 +38,8 @@ impl SourceParser {
             Self::Markdown
         } else if extension.eq_ignore_ascii_case("org") {
             Self::OrgMode
+        } else if extension.eq_ignore_ascii_case("typst") {
+            Self::Typst
         } else {
             Self::PlainEnglish
         }
@@ -46,6 +50,7 @@ impl SourceParser {
             Self::PlainEnglish => HarperDocument::new_curated(source, &PlainEnglish),
             Self::Markdown => HarperDocument::new_curated(source, &Markdown::default()),
             Self::OrgMode => HarperDocument::new_curated(source, &OrgMode),
+            Self::Typst => HarperDocument::new_curated(source, &Typst),
         }
     }
 }
