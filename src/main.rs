@@ -6,6 +6,7 @@ mod edit;
 mod event_stream;
 mod file_watch;
 mod model;
+mod session;
 mod speech;
 mod system_audio;
 

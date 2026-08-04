@@ -80,8 +80,8 @@ Optimize in this order:
 - An ignored PipeWire harness test feeds eSpeak through a temporary source into
   the real CPAL/default-device path, runs real local Whisper, and keeps Codex
   intercepted. It changes no global audio default.
-- The default-feature build currently discovers 97 tests: 84 normal and thirteen
-  ignored. The no-default-feature build discovers 90: 80 normal and ten
+- The default-feature build currently discovers 102 tests: 89 normal and thirteen
+  ignored. The no-default-feature build discovers 95: 85 normal and ten
   ignored. Keep these counts current when adding or removing ignored tests.
 - `cargo nextest run` passes with the default feature and with
   `--no-default-features`; nextest keeps concurrent iced simulators in isolated
@@ -106,6 +106,10 @@ Optimize in this order:
 - `src/system_audio.rs`: utterance-scoped, serialized system-audio reduction;
   multiplies the captured speaker volume by the configured percentage and
   conditionally restores it without blocking the UI or audio callback.
+- `src/session.rs`: per-process OS-locked recovery identities, private
+  coalesced atomic backup writes, abandoned-session claiming, and clean-close
+  removal; `src/app/session.rs` captures authoritative document state and owns
+  typed backup failure/recovery notices.
 - `src/checker.rs` and `src/checker/`: provider/result/audit facade plus the
   staged conservative Harper implementation in `harper.rs`: scoped
   classification, overlap selection, correction application, seam
@@ -371,8 +375,9 @@ Optimize in this order:
   or CPAL callback. Preserve a speaker-volume change made by the user during
   capture rather than overwriting it during restore. Apply the configured
   0–100% value as a multiplier of the captured level, never an absolute cap.
-- Speech, system-audio, Codex, model-download, and file-watch results wake iced through
-  source-owned subscriptions; do not restore a fixed-rate UI polling loop.
+- Speech, system-audio, Codex, model-download, session-backup, and file-watch
+  results wake iced through source-owned subscriptions; do not restore a
+  fixed-rate UI polling loop.
   Replacing a Speech/Codex bridge must also replace its stable subscription
   identity so iced retires the old stream. Rate-limit high-frequency visual
   signals at their producer (the microphone meter is capped at 20 Hz) instead

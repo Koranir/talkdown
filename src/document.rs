@@ -112,6 +112,7 @@ impl History {
 pub struct Document {
     content: Content,
     revision: u64,
+    recovery_revision: u64,
     saved_text: String,
     history: History,
 }
@@ -125,7 +126,26 @@ impl Document {
         Self {
             content: Content::with_text(text),
             revision: 0,
+            recovery_revision: 0,
             saved_text: text.to_owned(),
+            history: History::default(),
+        }
+    }
+
+    /// Reconstructs the last durable recovery state without inventing undo
+    /// history. The caller validates that `cursor` is a UTF-8 boundary.
+    pub fn recovered(text: &str, saved_text: &str, cursor: usize) -> Self {
+        debug_assert!(cursor <= text.len() && text.is_char_boundary(cursor));
+        let mut content = Content::with_text(text);
+        content.move_to(Cursor {
+            position: offset_to_position(&content, cursor),
+            selection: None,
+        });
+        Self {
+            content,
+            revision: 0,
+            recovery_revision: 0,
+            saved_text: saved_text.to_owned(),
             history: History::default(),
         }
     }
@@ -148,6 +168,14 @@ impl Document {
         self.revision
     }
 
+    pub fn recovery_revision(&self) -> u64 {
+        self.recovery_revision
+    }
+
+    pub fn saved_text(&self) -> &str {
+        &self.saved_text
+    }
+
     pub fn cursor(&self) -> Cursor {
         self.content.cursor()
     }
@@ -161,7 +189,11 @@ impl Document {
     }
 
     pub fn mark_saved_text(&mut self, text: String) {
+        if self.saved_text == text {
+            return;
+        }
         self.saved_text = text;
+        self.advance_recovery_revision();
     }
 
     pub fn reset(&mut self, text: &str) {
@@ -308,6 +340,11 @@ impl Document {
 
     fn advance_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.advance_recovery_revision();
+    }
+
+    fn advance_recovery_revision(&mut self) {
+        self.recovery_revision = self.recovery_revision.wrapping_add(1);
     }
 }
 
@@ -510,6 +547,22 @@ mod tests {
         assert_eq!(document.text(), "one two three");
         assert_eq!(document.snapshot().cursor, 8);
         assert_eq!(document.revision(), 1);
+    }
+
+    #[test]
+    fn recovered_text_retains_its_saved_baseline_and_cursor_without_history() {
+        let mut document = Document::recovered("saved plus edits", "saved", 10);
+
+        assert!(document.is_dirty());
+        assert_eq!(document.snapshot().cursor, 10);
+        assert_eq!(document.saved_text(), "saved");
+        assert!(!document.undo());
+
+        let recovery_revision = document.recovery_revision();
+        document.mark_saved_text("saved plus edits".into());
+        assert!(!document.is_dirty());
+        assert!(document.recovery_revision() > recovery_revision);
+        assert_eq!(document.revision(), 0);
     }
 
     #[test]

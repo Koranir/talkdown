@@ -172,6 +172,7 @@ impl App {
             self.discard_action = Some(DiscardAction::CloseWindow(id));
             Task::none()
         } else {
+            self.session.discard();
             window::close(id)
         }
     }
@@ -221,7 +222,10 @@ impl App {
         match action {
             DiscardAction::NewFile => self.new_file(),
             DiscardAction::OpenFile => self.begin_open_file(),
-            DiscardAction::CloseWindow(window) => window::close(window),
+            DiscardAction::CloseWindow(window) => {
+                self.session.discard();
+                window::close(window)
+            }
         }
     }
 
@@ -320,7 +324,7 @@ impl App {
         }
     }
 
-    fn check_external_file(&mut self) -> Task<Message> {
+    pub(super) fn check_external_file(&mut self) -> Task<Message> {
         if self.file_busy
             || self.file_check_pending
             || self.external_file_change.is_some()
@@ -573,6 +577,10 @@ impl App {
     }
 
     pub(super) fn replace_document(&mut self, text: &str) {
+        // New/Open/reload replacements are explicit buffer boundaries. Clear
+        // the prior recovery record immediately so a crash inside the normal
+        // debounce window cannot resurrect a document the user replaced.
+        self.session.request(None);
         self.abandon_document_work();
         self.buffer_generation = self.buffer_generation.wrapping_add(1);
         self.checker_review = None;
