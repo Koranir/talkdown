@@ -158,13 +158,15 @@ scrollbar while keeping keyboard navigation visible. Scroll synchronization
 never enters the trusted edit path and cannot change document text or history.
 
 Normal-mode physical Insert maps to the trusted mode transition without a text
-mutation. Physical Delete and Backspace first use the trusted `Document`
-deletion path for the current selection or adjacent character, then enter
-Insert mode. Holding the platform word-jump modifier (Ctrl outside macOS,
-Option on macOS) widens an unselected deletion to the next or previous word
-boundary in both Normal and Insert modes while preserving one undo step. The
-Vim-style `x` command remains a Normal-mode deletion rather than sharing this
-transition.
+mutation. Enter uses a trusted `Document` replacement to insert a newline at
+the cursor (or replace the current selection), then enters Insert mode. During
+an active speech capture, Enter retains its capture-finishing behavior instead.
+Physical Delete and Backspace first use the trusted `Document` deletion path
+for the current selection or adjacent character, then enter Insert mode.
+Holding the platform word-jump modifier (Ctrl outside macOS, Option on macOS)
+widens an unselected deletion to the next or previous word boundary in both
+Normal and Insert modes while preserving one undo step. The Vim-style `x`
+command remains a Normal-mode deletion rather than sharing this transition.
 
 Pinned iced exposes neither a text-editor caret style nor blink control.
 Talkdown therefore keeps the Normal-mode caret steady by refreshing iced's

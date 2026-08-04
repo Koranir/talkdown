@@ -326,6 +326,10 @@ impl ModalHarness {
                 let _ = self.document.perform(action, self.mode == Mode::Insert);
             }
             Message::EnterInsert => self.mode = Mode::Insert,
+            Message::InsertNewlineAndEnterInsert => {
+                let _ = self.document.insert("\n");
+                self.mode = Mode::Insert;
+            }
             Message::OpenLineAbove => {
                 self.document
                     .perform(text_editor::Action::Move(text_editor::Motion::Home), false);
@@ -591,9 +595,11 @@ fn late_preview_events_do_not_regress_finalizing_state() {
 
     app.begin_speech(EditIntent::Insert, SpeechTrigger::Space);
     let (utterance_id, _) = speech.expect_begin(timeout);
-    app.release_speech(SpeechTrigger::Space);
+    let _ = app.update(Message::InsertNewlineAndEnterInsert);
     assert_eq!(speech.expect_finish(timeout), utterance_id);
     assert_eq!(app.speech_state, UiState::Working);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.document.text(), "");
 
     speech.emit(SpeechEvent::Started { utterance_id });
     speech.emit(SpeechEvent::PartialFailed {
@@ -2824,7 +2830,7 @@ fn iced_open_line_above_places_the_insert_cursor_on_the_blank_line() {
 }
 
 #[test]
-fn iced_insert_delete_and_backspace_keys_enter_insert_mode() {
+fn iced_normal_mode_editing_keys_enter_insert_mode() {
     fn named_key_press(named: key::Named, modifiers: keyboard::Modifiers) -> text_editor::KeyPress {
         let key = keyboard::Key::Named(named);
         text_editor::KeyPress {
@@ -2874,6 +2880,17 @@ fn iced_insert_delete_and_backspace_keys_enter_insert_mode() {
     }
 
     let mut editor = ModalHarness::new("abcd");
+    editor.simulate(|ui| {
+        assert_eq!(ui.tap_key(key::Named::Home), event::Status::Captured);
+        assert_eq!(ui.tap_key(key::Named::Enter), event::Status::Captured);
+    });
+    assert_eq!(editor.document.text(), "\nabcd");
+    assert_eq!(editor.document.snapshot().cursor, 1);
+    assert_eq!(editor.mode, Mode::Insert);
+    assert!(editor.document.undo());
+    assert_eq!(editor.document.text(), "abcd");
+
+    editor.apply(Message::GlobalEscape);
     editor.simulate(|ui| {
         assert_eq!(ui.tap_key(key::Named::Home), event::Status::Captured);
         assert_eq!(ui.tap_key(key::Named::Delete), event::Status::Captured);

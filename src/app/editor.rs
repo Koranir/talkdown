@@ -141,6 +141,16 @@ impl App {
         self.finish_entering_insert_mode()
     }
 
+    pub(super) fn insert_newline_and_enter_insert(&mut self) -> Task<Message> {
+        if self.active_utterance.is_some() {
+            self.finish_speech();
+            return Task::none();
+        }
+
+        let _ = self.document.insert("\n");
+        self.finish_entering_insert_mode()
+    }
+
     pub(super) fn open_line_below(&mut self) -> Task<Message> {
         self.document
             .perform(text_editor::Action::Move(text_editor::Motion::End), false);

@@ -243,7 +243,9 @@ pub(super) fn editor_binding(
         key_press.key.as_ref(),
         keyboard::Key::Named(key::Named::Enter)
     ) {
-        return Some(text_editor::Binding::Custom(Message::FinishSpeech));
+        return Some(text_editor::Binding::Custom(
+            Message::InsertNewlineAndEnterInsert,
+        ));
     }
 
     let produced = key_press.text.as_deref();
