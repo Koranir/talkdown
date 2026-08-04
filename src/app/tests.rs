@@ -50,6 +50,31 @@ fn test_app(text: &str) -> (App, SpeechTestDriver, CodexTestDriver) {
 }
 
 #[test]
+fn document_edits_refresh_the_intercepted_session_backup() {
+    let (mut app, _speech, _codex) = test_app("saved");
+    let _ = app.update(Message::EnterInsert);
+    let _ = app.update(Message::Editor(text_editor::Action::Edit(
+        text_editor::Edit::Insert('!'),
+    )));
+    let generation = app.session_backup_generation;
+    let _ = app.update(Message::SessionBackupDue(generation));
+
+    let backup = app
+        .session
+        .intercepted_document()
+        .expect("dirty document recovery record");
+    assert_eq!(backup.text(), "saved!");
+    assert_eq!(backup.saved_text(), "saved");
+    assert_eq!(backup.cursor(), "saved!".len());
+
+    app.document.mark_saved_text("saved!".into());
+    let _ = app.update(Message::RefreshNormalCursor);
+    let generation = app.session_backup_generation;
+    let _ = app.update(Message::SessionBackupDue(generation));
+    assert!(app.session.intercepted_document().is_none());
+}
+
+#[test]
 fn recording_reduces_other_audio_and_restores_it_on_release() {
     let (mut app, speech, _codex) = test_app("Safe text");
     app.audio_multiplier_percent = 25;
@@ -2464,7 +2489,7 @@ fn settings_stage_checker_and_advertised_codex_model() -> Result<(), Error> {
 #[test]
 fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), Error> {
     let (mut app, _speech, _codex) = test_app("Safe text");
-    assert_eq!(app.subscription().units(), 6);
+    assert_eq!(app.subscription().units(), 7);
     let _ = app.update(Message::OpenSettings);
 
     let (download, driver) = DefaultModelDownload::intercepted();
@@ -2474,7 +2499,7 @@ fn model_settings_stage_verified_downloads_and_surface_failures() -> Result<(), 
         total: model::DEFAULT_MODEL_BYTES,
         cancelling: false,
     });
-    assert_eq!(app.subscription().units(), 7);
+    assert_eq!(app.subscription().units(), 8);
     let active_download_id = app
         .model_download
         .as_ref()

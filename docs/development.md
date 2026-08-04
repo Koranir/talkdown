@@ -121,12 +121,25 @@ Escape keeps the editor version. Deletion, read, and watcher failures retain the
 buffer and show recovery guidance. In-flight reads are generation-guarded
 across Open and Save.
 
-Speech, system-audio, Codex, model-download, and file-watch events each arrive through an
-iced subscription backed by an async-waking channel. The application has no
-fixed 30 FPS polling tick; worker output schedules UI updates immediately.
-Bridge replacements use a fresh stream identity, while intercepted tests drain
-the same receivers directly. The only periodic UI subscription is the guarded
-250 ms Normal-mode caret refresh described below.
+Unsaved edits are coalesced for 250 ms and written atomically to a private
+per-process record under the platform-local Talkdown application-data
+directory (`session-backups`). Each record has a paired OS-locked owner file.
+An ordinary startup skips locks held by live Talkdown processes and restores
+the newest valid abandoned record automatically; starting with an explicit
+file path does not consume a recovery record. Recovered named documents are
+checked against disk through the usual external-change guard. Saving, New,
+opening another file, or explicitly discarding and closing clears the current
+record; a crash or forced termination intentionally leaves it behind. Recovery
+restores text, saved baseline, cursor, file association, and missing-file state,
+but not the pre-crash undo stack.
+
+Speech, system-audio, Codex, model-download, session-backup, and file-watch
+events each arrive through an iced subscription backed by an async-waking
+channel. The application has no fixed 30 FPS polling tick; worker output
+schedules UI updates immediately. Bridge replacements use a fresh stream
+identity, while intercepted tests drain the same receivers directly. The only
+periodic UI subscription is the guarded 250 ms Normal-mode caret refresh
+described below.
 
 The toolbar Settings button and Ctrl/Cmd+comma open a staged modal for editor
 text, interface scale, visual word wrap, reduction of other audio while
@@ -371,8 +384,8 @@ TALKDOWN_WHISPER_MODEL=/path/to/ggml-model.bin \
 
 ## Audio and visual integration tests
 
-The default-feature build currently discovers 97 tests: 84 run normally and
-thirteen are ignored. The no-default-feature build discovers 90: 80 run
+The default-feature build currently discovers 102 tests: 89 run normally and
+thirteen are ignored. The no-default-feature build discovers 95: 85 run
 normally and ten are ignored.
 
 The two Codex checks and native microphone check above, the injected-audio

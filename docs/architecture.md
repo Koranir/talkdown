@@ -35,15 +35,17 @@ editor/mode/zoom transitions; `settings.rs` owns the staged preference and
 model-provisioning transaction; `voice.rs` owns capture and Speech events;
 `semantic.rs` owns optimistic checking and the locally validated Codex edit
 transaction; and `file_lifecycle.rs` owns generation-guarded file and watcher
-state. At the edges, `input.rs` owns bindings and guarded caret maintenance,
-`transcription.rs` contains pure UTF-8-safe dictation helpers, and `file_io.rs`
-adapts native dialogs and disk operations. `view.rs` composes the stateless
-widget tree, with Settings and safety confirmations in `view/settings.rs` and
-`view/modals.rs`; `ui.rs` centralizes palette and styles; `tests.rs` contains
-the private whole-app harness. Pure bounded-copy and checker-audit display
-formatting lives in `presentation.rs`, so domain transactions do not depend on
-widget construction. These remain one Rust `app` module boundary, so the split
-does not create a second state owner.
+state. `app/session.rs` integrates local recovery outcomes, while the
+crate-level `session.rs` owns per-process locks, coalesced atomic backup writes,
+and abandoned-session discovery. At the edges, `input.rs` owns bindings and
+guarded caret maintenance, `transcription.rs` contains pure UTF-8-safe
+dictation helpers, and `file_io.rs` adapts native dialogs and disk operations.
+`view.rs` composes the stateless widget tree, with Settings and safety
+confirmations in `view/settings.rs` and `view/modals.rs`; `ui.rs` centralizes
+palette and styles; `tests.rs` contains the private whole-app harness. Pure
+bounded-copy and checker-audit display formatting lives in `presentation.rs`,
+so domain transactions do not depend on widget construction. These remain one
+Rust `app` module boundary, so the split does not create a second state owner.
 
 The service boundaries follow the same facade-and-stages pattern. `codex.rs`
 owns the bridge and reconnecting worker, while `codex/context.rs` owns the
@@ -97,9 +99,29 @@ Missing or unreadable files produce sticky file notices and never become an
 empty replacement. Watcher setup or runtime failure is visible as a typed file
 warning and leaves the editor usable.
 
+Unsaved buffers also have a private recovery record under the platform-local
+application-data directory. Each Talkdown process owns a unique record and
+holds an exclusive operating-system lock for its lifetime. The background
+writer coalesces rapid edits for 250 ms and atomically replaces the complete
+record, including current text, its saved baseline, cursor byte offset, file
+association, and missing-file state. It never writes on the iced update thread.
+Saving or explicitly replacing the buffer clears the obsolete record. A clean
+window close, including an explicitly confirmed discard, stops the writer and
+removes the session files; crashes and forced termination leave them available.
+
+An ordinary launch tries to lock recovery records in newest-first order. A lock
+held by another process identifies a live Talkdown session and is skipped, so
+concurrent windows never consume or overwrite one another's text. The first
+valid unlocked record is claimed and restored automatically in Normal mode with
+no invented undo history. A command-line file remains authoritative and leaves
+abandoned records for a later ordinary launch. Named recoveries immediately
+enter the normal file-observation path, so disk changes while Talkdown was
+absent still require the existing local conflict decision.
+
 Worker-to-UI delivery is event-driven. Speech, system-audio, Codex,
-model-download, and file-watch bridges publish through async-waking channels whose stable IDs back iced
-subscriptions. A Settings-driven bridge replacement creates a new ID, causing
+model-download, session-backup, and file-watch bridges publish through
+async-waking channels whose stable IDs back iced subscriptions. A
+Settings-driven bridge replacement creates a new ID, causing
 iced to retire the old stream without confusing events from two workers. There
 is no fixed-rate application event pump: each result schedules `update`
 directly. High-frequency visual producers remain rate-limited deliberately—speech
@@ -555,5 +577,9 @@ visible even when another subsystem owns that notice.
 - New, Open, or window close with unsaved edits: the document remains intact
   until the user explicitly confirms discard. A cancelled or failed Open keeps
   it intact even after confirmation.
+- Crash or forced termination with unsaved edits: the latest completed local
+  recovery write remains. The next ordinary launch restores one abandoned,
+  unlocked session; a backup failure leaves the in-memory buffer unchanged and
+  warns the user to save manually.
 - A New/Open operation invalidates speech and semantic work from the previous
   buffer generation; stale completions are ignored.

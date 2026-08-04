@@ -6,6 +6,7 @@ mod file_lifecycle;
 mod input;
 mod presentation;
 mod semantic;
+mod session;
 mod settings;
 mod transcription;
 mod ui;
@@ -21,6 +22,7 @@ use crate::document::{Document, DocumentSnapshot};
 use crate::edit::{EditIntent, ProposedEdit};
 use crate::file_watch::{FileWatchEvent, FileWatcher};
 use crate::model::{self, DefaultModelDownload, DownloadEvent, ModelSource};
+use crate::session::{SessionBackup, SessionEvent};
 use crate::speech::{SpeechBridge, SpeechEvent};
 use crate::system_audio::{AudioReductionEvent, SystemAudioBridge};
 
@@ -112,6 +114,7 @@ const MIN_UI_SCALE_PERCENT: u16 = model::MIN_UI_SCALE_PERCENT;
 const MAX_UI_SCALE_PERCENT: u16 = model::MAX_UI_SCALE_PERCENT;
 const UI_SCALE_STEP_PERCENT: i16 = 10;
 const AUDIO_MULTIPLIER_STEP_PERCENT: i16 = 10;
+const SESSION_BACKUP_DELAY: Duration = Duration::from_millis(250);
 
 const UI_FONT: Font = Font::new("Atkinson Hyperlegible Next");
 const UI_SEMIBOLD_FONT: Font = UI_FONT.weight(font::Weight::Semibold);
@@ -166,6 +169,7 @@ impl UiState {
 enum NoticeSource {
     Editor,
     File,
+    Session,
     Speech,
     SystemAudio,
     Codex,
@@ -228,7 +232,7 @@ impl Notice {
             | UiState::Success => 0,
         };
         let safety = match self.source {
-            NoticeSource::File | NoticeSource::Safety => 10,
+            NoticeSource::File | NoticeSource::Session | NoticeSource::Safety => 10,
             NoticeSource::Editor
             | NoticeSource::Speech
             | NoticeSource::SystemAudio
@@ -384,6 +388,8 @@ enum Message {
     CodexWorkerEvent(u64, CodexEvent),
     ModelDownloadEvent(u64, DownloadEvent),
     FileWatchEvent(FileWatchEvent),
+    SessionBackupEvent(SessionEvent),
+    SessionBackupDue(u64),
 
     // External-file conflicts and destructive-action confirmation.
     ExternalFileChecked {
@@ -465,6 +471,8 @@ impl Message {
                 | Self::CodexWorkerEvent(_, _)
                 | Self::ModelDownloadEvent(_, _)
                 | Self::FileWatchEvent(_)
+                | Self::SessionBackupEvent(_)
+                | Self::SessionBackupDue(_)
                 | Self::ExternalFileChecked { .. }
         )
     }
@@ -578,6 +586,14 @@ struct CheckerReview {
     lints: Vec<CheckerReviewLint>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionFingerprint {
+    buffer_generation: u64,
+    recovery_revision: u64,
+    file: Option<PathBuf>,
+    file_missing: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiscardAction {
     NewFile,
@@ -628,6 +644,9 @@ struct App {
     file_change_queued: bool,
     external_file_change: Option<ExternalFileChange>,
     file_watcher: FileWatcher,
+    session: SessionBackup,
+    session_fingerprint: Option<SessionFingerprint>,
+    session_backup_generation: u64,
 
     // Editor mode and committed presentation preferences.
     mode: Mode,
@@ -704,7 +723,33 @@ impl App {
         )
         .contextual();
 
-        if let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) {
+        let requested_path = std::env::args_os().nth(1).map(PathBuf::from);
+        let mut session_start = SessionBackup::start(requested_path.is_none());
+        let restored_session = if requested_path.is_none() {
+            session_start.recovered.take()
+        } else {
+            None
+        };
+
+        if let Some(recovered) = restored_session.as_ref() {
+            file = recovered.file();
+            document =
+                Document::recovered(recovered.text(), recovered.saved_text(), recovered.cursor());
+            file_observation = file.as_ref().map(|_| {
+                if recovered.file_missing() {
+                    FileObservation::Missing
+                } else {
+                    FileObservation::Present(recovered.saved_text().to_owned())
+                }
+            });
+            notice = Notice::new(
+                NoticeSource::Safety,
+                UiState::Warning,
+                "Recovered an unsaved session",
+                "Talkdown restored the latest abandoned local recovery copy; the recovered edits are still unsaved.",
+            )
+            .recovery("Review the document, then use Save or Save As to keep it permanently.");
+        } else if let Some(path) = requested_path {
             match std::fs::read_to_string(&path) {
                 Ok(contents) => {
                     document = Document::with_text(&contents);
@@ -741,17 +786,51 @@ impl App {
         let speech = SpeechBridge::start_with_model(initial_model.path.clone());
         let codex = CodexBridge::start_with_model(preferences.codex_model.clone());
         let mut app = Self::from_parts(file, document, notice, speech, codex);
+        app.session = session_start.backup;
         app.file_observation = file_observation;
         app.file_watcher.watch_file(app.file.as_deref());
         app.speech_model_path = initial_model.path;
         app.speech_model_source = initial_model.source;
         app.restore_preferences(preferences);
         app.model_download_error = initial_model.warning;
+        if let Some(warning) = session_start.warning {
+            let notice = if app.session.is_enabled() {
+                Notice::new(
+                    NoticeSource::Session,
+                    UiState::Warning,
+                    "Some session recovery data was unavailable",
+                    format!("The editor buffer is unchanged, but Talkdown {warning}."),
+                )
+                .recovery(
+                    "New edits will still be backed up locally. Save manually if you expected another session.",
+                )
+            } else {
+                Notice::new(
+                    NoticeSource::Session,
+                    UiState::Warning,
+                    "Automatic session backup is unavailable",
+                    format!("The editor buffer is unchanged, but Talkdown {warning}."),
+                )
+                .recovery("Save the document manually; restart Talkdown to retry recovery backup.")
+            };
+            app.set_notice(notice);
+        }
+        let initial_session_backup = app.refresh_session_backup();
 
         let initial_scroll = app.sync_editor_scroll();
+        let initial_file_check = if restored_session.is_some() && app.file.is_some() {
+            app.check_external_file()
+        } else {
+            Task::none()
+        };
         (
             app,
-            Task::batch([operation::focus(EDITOR_ID), initial_scroll]),
+            Task::batch([
+                operation::focus(EDITOR_ID),
+                initial_scroll,
+                initial_file_check,
+                initial_session_backup,
+            ]),
         )
     }
 
@@ -775,6 +854,12 @@ impl App {
             file_watcher: FileWatcher::start(),
             #[cfg(test)]
             file_watcher: FileWatcher::intercepted(),
+            #[cfg(not(test))]
+            session: SessionBackup::disabled(),
+            #[cfg(test)]
+            session: SessionBackup::intercepted(),
+            session_fingerprint: None,
+            session_backup_generation: 0,
             mode: Mode::Normal,
             syntax_theme: highlighter::Theme::Base16Ocean,
             word_wrap: true,
@@ -906,6 +991,7 @@ impl App {
             self.file_watcher
                 .subscription()
                 .map(Message::FileWatchEvent),
+            self.session.subscription().map(Message::SessionBackupEvent),
         ];
         if let Some(download) = self.model_download.as_ref() {
             subscriptions.push(
@@ -923,7 +1009,9 @@ impl App {
             return Task::none();
         }
 
-        self.dispatch_message(message)
+        let task = self.dispatch_message(message);
+        let session_task = self.refresh_session_backup();
+        Task::batch([task, session_task])
     }
 
     /// Applies the modal input shields in priority order.
@@ -1016,6 +1104,8 @@ impl App {
             Message::ConfirmDiscard => self.confirm_discard(),
             Message::CancelDiscard => self.cancel_discard(),
             Message::FileWatchEvent(event) => self.handle_file_watch_event(event),
+            Message::SessionBackupEvent(event) => self.handle_session_backup_event(event),
+            Message::SessionBackupDue(generation) => self.flush_session_backup(generation),
 
             // Staged Settings transaction and model provisioning.
             Message::OpenSettings => self.open_settings(),
