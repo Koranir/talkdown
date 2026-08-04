@@ -156,10 +156,12 @@ Optimize in this order:
   delayed clipboard paste can bypass it. `Document::perform` must continue to
   reject every `action.is_edit()` unless mode is Insert.
 - In Normal mode, the physical Insert key enters Insert mode without changing
-  text. The physical Delete and Backspace keys delete the current selection or
-  the forward/previous character through `Document`, then enter Insert mode.
-  Keep these bindings distinct from the Vim-style `x` command, which remains in
-  Normal mode.
+  text. Enter inserts a newline at the cursor (or replaces the selection)
+  through `Document`, then enters Insert mode; during active speech it finishes
+  capture instead. The physical Delete and Backspace keys delete the current
+  selection or the forward/previous character through `Document`, then enter
+  Insert mode. Keep these bindings distinct from the Vim-style `x` command,
+  which remains in Normal mode.
 - AI changes must use the separate trusted replacement path, never spoof
   untrusted editor actions.
 - iced cursor columns and Talkdown offsets are UTF-8 byte positions. Do not

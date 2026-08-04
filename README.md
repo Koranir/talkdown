@@ -174,6 +174,7 @@ Press <kbd>i</kbd> to enter **Insert mode** at the cursor. Press
 | Hold <kbd>c</kbd> | Give a contextual voice command |
 | <kbd>:</kbd> | Type a contextual command |
 | <kbd>i</kbd> / <kbd>a</kbd> | Enter Insert mode before / after the cursor |
+| <kbd>Enter</kbd> | Insert a newline at the cursor and enter Insert mode |
 | <kbd>o</kbd> / <kbd>Shift</kbd>+<kbd>o</kbd> | Open a line below / above and start typing |
 | <kbd>Esc</kbd> | Cancel speech or return to Normal mode |
 | <kbd>u</kbd> | Undo |

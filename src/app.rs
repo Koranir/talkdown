@@ -348,6 +348,7 @@ enum Message {
     Editor(text_editor::Action),
     EnterInsert,
     EnterInsertAfter,
+    InsertNewlineAndEnterInsert,
     OpenLineAbove,
     OpenLineBelow,
     DeleteForward,
@@ -421,7 +422,6 @@ enum Message {
     // Speech capture lifecycle.
     BeginSpeech(EditIntent, SpeechTrigger),
     ReleaseSpeech(SpeechTrigger),
-    FinishSpeech,
 
     // Cross-domain escape, typed commands, and recovery actions.
     GlobalEscape,
@@ -964,6 +964,7 @@ impl App {
             Message::Editor(action) => self.perform_editor_action(action),
             Message::EnterInsert => self.enter_insert(false),
             Message::EnterInsertAfter => self.enter_insert(true),
+            Message::InsertNewlineAndEnterInsert => self.insert_newline_and_enter_insert(),
             Message::OpenLineAbove => self.open_line_above(),
             Message::OpenLineBelow => self.open_line_below(),
             Message::DeleteForward => self.delete_forward(),
@@ -1044,10 +1045,6 @@ impl App {
             }
             Message::ReleaseSpeech(trigger) => {
                 self.release_speech(trigger);
-                Task::none()
-            }
-            Message::FinishSpeech => {
-                self.finish_speech();
                 Task::none()
             }
             Message::GlobalEscape => self.escape(),
